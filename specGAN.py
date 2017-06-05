@@ -15,7 +15,7 @@ import math
 import time
 from data_io import read_kaldi_ark_from_scp
 
-data_base_dir = "/data/data2/scratch/bagchid/specGAN-tf"
+data_base_dir = "/data/data2/scratch/bagchid/specGAN"
 def read_mats(uid, offset, batch_size, file_name):
     #Read a buffer containing 10*batch_size+offset 
     #Returns a line number of the scp file
@@ -79,46 +79,80 @@ def create_model():
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
         gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
 
-def main():
-    batch_size = 100
-    nframes = 327689
-    ark_dict_noisy,uid = read_mats(0,0,batch_size,"data-spectrogram/train_si84_noisy/feats.scp")
-    ark_dict_clean,uid = read_mats(0,0,batch_size,"data-spectrogram/train_si84_clean/feats.scp")
-    
-    ids_noisy = sorted(ark_dict_noisy.keys())
-    mats_noisy = [ark_dict_noisy[i] for i in ids_noisy]
-    mats2_noisy = np.vstack(mats_noisy)
-    offset_frames_noisy = mats2_noisy[batch_size*10:]
-    mats2_noisy = mats2_noisy[:batch_size*10]
+def next_batch(config):
+    batch_index = config['batch_index']
+    batch_size = config['batch_size']
+    offset_frames_noisy = config['offset_frames_noisy']
+    offset_frames_clean = config['offset_frames_clean']
 
-    ids_clean = sorted(ark_dict_clean.keys())
-    mats_clean = [ark_dict_clean[i] for i in ids_clean]
-    mats2_clean = np.vstack(mats_clean)
-    offset_frames_clean = mats2_clean[batch_size*10:]
-    mats2_clean = mats2_clean[:batch_size*10]
+    def create_buffer(uid, offset):
+        ark_dict_noisy,uid_new= read_mats(uid,offset,batch_size,"data-spectrogram/train_si84_noisy/feats.scp")
+        ark_dict_clean,uid_new = read_mats(uid,offset,batch_size,"data-spectrogram/train_si84_clean/feats.scp")
 
-    for batch_number in range(int(nframes/batch_size) + 1):
-        ark_dict_noisy,uid = read_mats(uid+1,offset_frames_noisy.shape[0],batch_size,"data-spectrogram/train_si84_noisy/feats.scp")
-        ark_dict_clean,uid = read_mats(uid+1,offset_frames_noisy.shape[0],batch_size,"data-spectrogram/train_si84_clean/feats.scp")
-    
         ids_noisy = sorted(ark_dict_noisy.keys())
         mats_noisy = [ark_dict_noisy[i] for i in ids_noisy]
         mats2_noisy = np.vstack(mats_noisy)
+        nonlocal offset_frames_noisy
         mats2_noisy = np.concatenate((offset_frames_noisy,mats2_noisy),axis=0)
-        offset_frames_noisy = mats2_noisy[batch_size*10:]
-        mats2_noisy = mats2_noisy[:batch_size*10]
 
         ids_clean = sorted(ark_dict_clean.keys())
         mats_clean = [ark_dict_clean[i] for i in ids_clean]
         mats2_clean = np.vstack(mats_clean)
+        nonlocal offset_frames_clean
         mats2_clean = np.concatenate((offset_frames_clean,mats2_clean),axis=0)
-        offset_frames_clean = mats2_clean[batch_size*10:]
-        mats2_clean = mats2_clean[:batch_size*10]
+            
+        if mats2_noisy.shape[0]>=(batch_size*10):
+            offset_frames_noisy = mats2_noisy[batch_size*10:]
+            mats2_noisy = mats2_noisy[:batch_size*10]
+            offset_frames_clean = mats2_clean[batch_size*10:]
+            mats2_clean = mats2_clean[:batch_size*10]
+            offset = offset_frames_noisy.shape[0]
+        return mats2_noisy, mats2_clean, uid_new, offset
 
-        print (mats2_noisy.shape)
-        print (offset_frames_noisy.shape)
+    if batch_index==0:
+        frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'], config['offset'])
+    else:
+        frame_buffer_noisy = config['frame_buffer_noisy']
+        frame_buffer_clean = config['frame_buffer_clean']
+        uid_new = config['uid']
+        offset = config['offset']
+
+    start = batch_index*batch_size
+    end = min((batch_index+1)*batch_size,frame_buffer_noisy.shape[0])
+    config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new, 'offset':offset, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'frame_buffer_clean':frame_buffer_clean}
+
+    return (frame_buffer_noisy[start:end], frame_buffer_clean[start:end], config)
+        
+
+    
+def placeholder_inputs():
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(batch_size,257))
+    clean_placeholder = tf.placeholder(tf.float32, shape=(batch_size,257))
+    return noisy_placeholder, clean_placeholder
+
+def fill_feed_dict():
+    batch_size=100000
+    batch_index = 0
+    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
+    offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
+    frame_buffer_clean = np.array([], dtype=np.float32)
+    frame_buffer_noisy = np.array([], dtype=np.float32)
+
+    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
+
+    while(True):
+        noisy_feed, clean_feed, config = next_batch(config)
+        if noisy_feed.shape[0]<batch_size:
+            break
+        
+    #feed_dict = {noisy_pl:noisy_feed, clean_pl:clean_feed,}
+    return True
 
 
+
+def main():
+    fill_feed_dict()
+    
 if __name__=='__main__':
     main()    
     

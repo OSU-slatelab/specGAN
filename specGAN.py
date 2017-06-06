@@ -79,7 +79,7 @@ def create_model():
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
         gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
 
-def next_batch(config):
+def fill_feed_dict(noisy_pl, clean_pl, config):
     batch_index = config['batch_index']
     batch_size = config['batch_size']
     offset_frames_noisy = config['offset_frames_noisy']
@@ -111,6 +111,10 @@ def next_batch(config):
 
     if batch_index==0:
         frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'], config['offset'])
+        A = np.random.permutation(frame_buffer_noisy.shape[0])
+        frame_buffer_noisy = frame_buffer_noisy[A]
+        frame_buffer_clean = frame_buffer_clean[A]
+ 
     else:
         frame_buffer_noisy = config['frame_buffer_noisy']
         frame_buffer_clean = config['frame_buffer_clean']
@@ -120,17 +124,17 @@ def next_batch(config):
     start = batch_index*batch_size
     end = min((batch_index+1)*batch_size,frame_buffer_noisy.shape[0])
     config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new, 'offset':offset, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'frame_buffer_clean':frame_buffer_clean}
-
-    return (frame_buffer_noisy[start:end], frame_buffer_clean[start:end], config)
+    feed_dict = {noisy_pl:frame_buffer_noisy[start:end], clean_pl:frame_buffer_clean[start:end]}
+    return (feed_dict, config)
         
 
     
-def placeholder_inputs():
+def placeholder_inputs(batch_size):
     noisy_placeholder = tf.placeholder(tf.float32, shape=(batch_size,257))
     clean_placeholder = tf.placeholder(tf.float32, shape=(batch_size,257))
     return noisy_placeholder, clean_placeholder
 
-def fill_feed_dict():
+def main():
     batch_size=100000
     batch_index = 0
     offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
@@ -140,21 +144,21 @@ def fill_feed_dict():
 
     config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
 
+    noisy_pl, clean_pl = placeholder_inputs(batch_size)
     while(True):
-        noisy_feed, clean_feed, config = next_batch(config)
-        A = np.random.permutation(batch_size*10)
-        noisy_feed = noisy_feed[A]
-        clean_feed = clean_feed[A]
-        if noisy_feed.shape[0]<batch_size:
+        feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config)
+        if feed_dict[noisy_pl].shape[0]<(batch_size*10):
             break
+
+
+
+
+
+
         
-    #feed_dict = {noisy_pl:noisy_feed, clean_pl:clean_feed,}
-    return True
 
 
 
-def main():
-    fill_feed_dict()
     
 if __name__=='__main__':
     main()    

@@ -142,6 +142,9 @@ def fill_feed_dict():
 
     while(True):
         noisy_feed, clean_feed, config = next_batch(config)
+        A = np.random.permutation(batch_size*10)
+        noisy_feed = noisy_feed[A]
+        clean_feed = clean_feed[A]
         if noisy_feed.shape[0]<batch_size:
             break
         

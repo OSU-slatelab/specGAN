@@ -16,7 +16,7 @@ import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
-data_base_dir = "/data/data2/scratch/bagchid/specGAN-tf_old"
+data_base_dir = "/data/data2/scratch/bagchid/specGAN"
 def read_mats(uid, offset, batch_size, file_name):
     #Read a buffer containing 10*batch_size+offset 
     #Returns a line number of the scp file

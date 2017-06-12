@@ -26,31 +26,65 @@ def read_mats(uid, offset, batch_size, file_name):
 
 def loss(predictions, labels):
   mse = tf.reduce_mean(tf.squared_difference(predictions, labels))
-  return tf.reduce_mean(mse, name='mse_mean')
+  return mse
 
-def create_generator(generator_inputs, phase):
+
+def batch_norm(x, name_scope, shape, training, epsilon=1e-3, decay=0.999):
+    '''Assume 2d [batch, values] tensor'''
+
+    with tf.variable_scope(name_scope):
+        scale = tf.get_variable('scale', shape[-1], initializer=tf.constant_initializer(0.1))
+        offset = tf.get_variable('offset', shape[-1])
+
+        pop_mean = tf.get_variable('pop_mean', shape[-1], initializer=tf.constant_initializer(0.0), trainable=False)
+        pop_var = tf.get_variable('pop_var', shape[-1], initializer=tf.constant_initializer(1.0), trainable=False)
+        batch_mean, batch_var = tf.nn.moments(x, [0])
+
+        train_mean_op = tf.assign(pop_mean, pop_mean * decay + batch_mean * (1 - decay))
+        train_var_op = tf.assign(pop_var, pop_var * decay + batch_var * (1 - decay))
+
+        def batch_statistics():
+            with tf.control_dependencies([train_mean_op, train_var_op]):
+                return tf.nn.batch_normalization(x, batch_mean, batch_var, offset, scale, epsilon)
+
+        def population_statistics():
+            return tf.nn.batch_normalization(x, pop_mean, pop_var, offset, scale, epsilon)
+
+        return tf.cond(training, batch_statistics, population_statistics)
+
+
+def create_generator(generator_inputs):
+
+    #Create additional placeholder inputs
+    keep_prob = tf.placeholder(tf.float32)
+    is_training = tf.placeholder(tf.bool)
+
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        weight = tf.get_variable("weight", [257, 1024], dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", [1024])
+        shape = [257, 1024]
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
+        bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(generator_inputs, weight) + bias
-        bn = tf.contrib.layers.batch_norm(linear,center=True, scale=True,is_training=phase)
-        hidden1 = tf.nn.relu(bn)
+        bn = batch_norm(linear, 'hidden1', shape, is_training)
+        hidden = tf.nn.relu(bn)
+        dropout1 = tf.nn.dropout(hidden, keep_prob)
     # Hidden 2
     with tf.variable_scope('hidden2'):
-        weight = tf.get_variable("weight", [1024, 1024], dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", [1024])
-        linear = tf.matmul(hidden1, weight) + bias
-        bn = tf.contrib.layers.batch_norm(linear,center=True, scale=True,is_training=phase)
-        hidden2 = tf.nn.relu(bn)
-
+        shape = [1024, 1024]
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
+        bias = tf.get_variable("bias", shape[-1])
+        linear = tf.matmul(dropout1, weight) + bias
+        bn = batch_norm(linear, 'hidden2', shape, is_training)
+        hidden = tf.nn.relu(bn)
+        dropout2 = tf.nn.dropout(hidden, keep_prob)
     # Linear
     with tf.variable_scope('linear'):
-        weight = tf.get_variable("weight", [1024, 257], dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", [257])
-        linear = tf.matmul(hidden2, weight) + bias
-        bn = tf.contrib.layers.batch_norm(linear,center=True, scale=True,is_training=phase)
-    return bn
+        shape = [1024, 257]
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
+        bias = tf.get_variable("bias", shape[-1])
+        linear = tf.matmul(dropout2, weight) + bias
+        bn = batch_norm(linear, 'linear', shape, is_training)
+    return bn, is_training, keep_prob
     
 
 def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_global_norm=5.0):
@@ -68,15 +102,15 @@ def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_g
     return train_op
 
     
-def fill_feed_dict(noisy_pl, clean_pl, config):
+def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     batch_index = config['batch_index']
     batch_size = config['batch_size']
     offset_frames_noisy = config['offset_frames_noisy']
     offset_frames_clean = config['offset_frames_clean']
 
     def create_buffer(uid, offset):
-        ark_dict_noisy,uid_new= read_mats(uid,offset,batch_size,"data-spectrogram/train_si84_noisy/feats.scp")
-        ark_dict_clean,uid_new = read_mats(uid,offset,batch_size,"data-spectrogram/train_si84_clean/feats.scp")
+        ark_dict_noisy,uid_new= read_mats(uid,offset,batch_size,noisy_file)
+        ark_dict_clean,uid_new = read_mats(uid,offset,batch_size,clean_file)
 
         ids_noisy = sorted(ark_dict_noisy.keys())
         mats_noisy = [ark_dict_noisy[i] for i in ids_noisy]
@@ -100,9 +134,10 @@ def fill_feed_dict(noisy_pl, clean_pl, config):
 
     if batch_index==0:
         frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'], config['offset'])
-        A = np.random.permutation(frame_buffer_noisy.shape[0])
-        frame_buffer_noisy = frame_buffer_noisy[A]
-        frame_buffer_clean = frame_buffer_clean[A]
+        if shuffle==True:
+            A = np.random.permutation(frame_buffer_noisy.shape[0])
+            frame_buffer_noisy = frame_buffer_noisy[A]
+            frame_buffer_clean = frame_buffer_clean[A]
  
     else:
         frame_buffer_noisy = config['frame_buffer_noisy']
@@ -122,31 +157,41 @@ def fill_feed_dict(noisy_pl, clean_pl, config):
 def placeholder_inputs(batch_size):
     noisy_placeholder = tf.placeholder(tf.float32, shape=(None,257))
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,257))
+    keep_prob = tf.placeholder(tf.float32)
+    is_training = tf.placeholder(tf.bool)
     return noisy_placeholder, clean_placeholder
 
-def do_eval():
-    batch_size=100000
+def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
+    batch_size=1024
     batch_index = 0
     offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
     offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)
-    
+    tot_loss_epoch = 0 
+    totframes = 0
     config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
 
-    noisy_pl, clean_pl = placeholder_inputs(batch_size)
+    start_time = time.time()
     while(True):
-        feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config)
-        if feed_dict[noisy_pl].shape[0]<(batch_size*10):
+        feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/dev_dt_05_noisy/feats.scp", "data-spectrogram/dev_dt_05_clean/feats.scp", shuffle=False)
+        feed_dict[is_training] = False
+        feed_dict[keep_prob] = 1.0
+        if feed_dict[noisy_pl].shape[0]<batch_size:
+            loss_value = sess.run(loss_val, feed_dict=feed_dict)
+            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+            totframes += feed_dict[noisy_pl].shape[0]
             break
 
-    true_count = 0  # Counts the number of correct predictions.
-    while(True):
-        feed_dict = fill_feed_dict(noisy_pl, clean_pl)
-        true_count += sess.run(eval_correct, feed_dict=feed_dict)
-    precision = float(true_count) / num_examples
-    print('  Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
-        (num_examples, true_count, precision))
+        loss_value = sess.run(loss_val, feed_dict=feed_dict)
+        tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+        totframes += feed_dict[noisy_pl].shape[0]
+
+    eval_correct = float(tot_loss_epoch)/totframes
+    duration = time.time() - start_time
+    print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
+    return eval_correct, duration
+
 
 
 def run_training():
@@ -159,14 +204,22 @@ def run_training():
     phase = True
     config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
 
+    os.makedirs("model")
     noisy_pl, clean_pl = placeholder_inputs(batch_size)
     tot_loss_epoch = 0
     avg_loss_epoch = 0
+    totframes = 0
+    keep_prob = 0.4
+    best_validation_loss = np.inf
+    improvement_threshold = 0.995
+    patience = 10*5312
+    patience_increase = 2
+
     with tf.Graph().as_default():
         noisy_pl, clean_pl = placeholder_inputs(batch_size)
-        predictions = create_generator(noisy_pl, phase)
+        predictions, is_training, keep_prob = create_generator(noisy_pl)
         loss_val = loss(predictions, clean_pl)
-        train_op = training(loss_val,0.01,2,0.5)
+        train_op = training(loss_val,0.08,5312*10,0.96)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
@@ -175,8 +228,12 @@ def run_training():
 
         sess.run(init)
         start_time = time.time()
-        for step in xrange(5312*10):
-            feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config)
+        step = 0
+        while(True):
+            feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/train_si84_noisy/feats.scp", "data-spectrogram/train_si84_clean/feats.scp", shuffle=True)
+            feed_dict[keep_prob] = 0.4
+            feed_dict[is_training] = True
+
             if feed_dict[noisy_pl].shape[0]<batch_size:
                 batch_index = 0
                 offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
@@ -189,24 +246,30 @@ def run_training():
 
 
             _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)
-            tot_loss_epoch += loss_value
+            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+            totframes += feed_dict[noisy_pl].shape[0]
 
-            if (step+1) % 5312 == 0:
-                avg_loss_epoch = tot_loss_epoch/5312
+            if (step+1)%5312 == 0:
+                avg_loss_epoch = float(tot_loss_epoch)/totframes
                 tot_loss_epoch = 0   
                 duration = time.time() - start_time
                 start_time = time.time()
-                print ('Step %d: loss = %.2f (%.3f sec)' % (step, loss_value, duration))
+                print ('Step %d: loss = %.2f (%.3f sec)' % (step, avg_loss_epoch, duration))
                 summary_str = sess.run(summary, feed_dict=feed_dict)
                 summary_writer.add_summary(summary_str, step)
                 summary_writer.flush()
-
-            #print ('Eval step:')
- 
-            #do_eval(sess,
-                 #   eval_correct,
-                 #   noisy_pl,
-                 #   clean_pl)
+                print ('Eval step:')
+                eval_loss, duration = do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob)
+                
+                if eval_loss<best_validation_loss:
+                    if eval_loss<best_validation_loss * improvement_threshold:
+                        patience = max(patience, (step+1)* patience_increase)
+                    best_validation_loss = eval_loss
+                    best_iter = step
+                    save_path = saver.save(sess, "model/model.ckpt"+str(step))
+            if patience<=step:
+                break
+            step = step + 1
 
 
 

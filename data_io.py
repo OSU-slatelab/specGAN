@@ -57,13 +57,13 @@ def read_kaldi_ark_from_scp(uid, offset, batch_size, scp_fn, ark_base_dir=""):
     """
 
     ark_dict = {}
-	totframes = 0
-	lines = 0
+    totframes = 0
+    lines = 0
     with open(scp_fn) as f:
         for line in f:
-			lines = lines + 1
-			if lines<=uid:
-				continue
+            lines = lines + 1
+            if lines<=uid:
+                continue
             if line == "":
                 continue
             utt_id, path_pos = line.replace("\n", "").split(" ")
@@ -82,10 +82,9 @@ def read_kaldi_ark_from_scp(uid, offset, batch_size, scp_fn, ark_base_dir=""):
             #utt_mat_list=utt_mat.tolist()
             ark_read_buffer.close()
             ark_dict[utt_id] = utt_mat
-			totframes += rows
-			if totframes>(batch_size*10-offset):
-				break
-
+            totframes += rows
+            if totframes>(batch_size*10-offset):
+                break
     return ark_dict,uid
 #-----------------------------------------------------------------------------#
 #                         THEANO DATASET I/O FUNCTIONS                        #

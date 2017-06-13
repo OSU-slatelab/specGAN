@@ -61,7 +61,7 @@ def create_generator(generator_inputs):
 
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        shape = [257, 1024]
+        shape = [257*(2*5+1), 1024]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(generator_inputs, weight) + bias
@@ -101,7 +101,6 @@ def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_g
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
 
-# do we need the inputs from noisy_pl and clean_pl?        
 def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
 
     batch_index = config['batch_index']
@@ -163,8 +162,8 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
               'offset':offset, 'offset_frames_noisy':offset_frames_noisy,
               'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy,
               'frame_buffer_clean':frame_buffer_clean, 'lr_ctx':lr_ctx, 'perm':A}
-    noisy_batch = np.stack(frame_buffer_noisy[A[i]:A[i]+1+2*lr_ctx] for i in range(start, end),
-                           axis = 0)
+    noisy_batch = np.stack((np.flatten(frame_buffer_noisy[A[i]:A[i]+1+2*lr_ctx,])
+                            for i in range(start, end)), axis = 0)
     feed_dict = {noisy_pl:noisy_batch, clean_pl:frame_buffer_clean[start:end]}
     return (feed_dict, config)
         
@@ -172,7 +171,7 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     
     
 def placeholder_inputs(num_feats, lr_ctx):
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats,2*lr_ctx+1))
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats*(2*lr_ctx+1)))
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats))
     keep_prob = tf.placeholder(tf.float32)
     is_training = tf.placeholder(tf.bool)
@@ -181,7 +180,7 @@ def placeholder_inputs(num_feats, lr_ctx):
 def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
     batch_size=1024
     batch_index = 0
-    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
+    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257*(2*lr_ctx+1))
     offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)

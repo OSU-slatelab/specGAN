@@ -16,7 +16,7 @@ import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
-data_base_dir = "/data/data2/scratch/bagchid/specGAN"
+data_base_dir = os.getcwd()
 def read_mats(uid, offset, batch_size, file_name):
     #Read a buffer containing 10*batch_size+offset 
     #Returns a line number of the scp file
@@ -162,7 +162,7 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
               'offset':offset, 'offset_frames_noisy':offset_frames_noisy,
               'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy,
               'frame_buffer_clean':frame_buffer_clean, 'lr_ctx':lr_ctx, 'perm':A}
-    noisy_batch = np.stack((np.flatten(frame_buffer_noisy[A[i]:A[i]+1+2*lr_ctx,])
+    noisy_batch = np.stack((frame_buffer_noisy[A[i]:A[i]+1+2*lr_ctx,].flatten()
                             for i in range(start, end)), axis = 0)
     feed_dict = {noisy_pl:noisy_batch, clean_pl:frame_buffer_clean[start:end]}
     return (feed_dict, config)

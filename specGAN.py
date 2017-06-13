@@ -101,12 +101,15 @@ def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_g
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
 
-    
+# do we need the inputs from noisy_pl and clean_pl?        
 def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
+
     batch_index = config['batch_index']
     batch_size = config['batch_size']
     offset_frames_noisy = config['offset_frames_noisy']
     offset_frames_clean = config['offset_frames_clean']
+    lr_ctx = config['lr_ctx']
+    A = config['perm']
 
     def create_buffer(uid, offset):
         ark_dict_noisy,uid_new= read_mats(uid,offset,batch_size,noisy_file)
@@ -133,11 +136,20 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
         return mats2_noisy, mats2_clean, uid_new, offset
 
     if batch_index==0:
-        frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'], config['offset'])
+        frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'],
+                                                                                config['offset'])
+        frame_buffer_noisy = np.pad(frame_buffer_noisy,
+                                    ((lr_ctx,),(0,)),
+                                    'constant',
+                                    constant_values=0)
         if shuffle==True:
-            A = np.random.permutation(frame_buffer_noisy.shape[0])
-            frame_buffer_noisy = frame_buffer_noisy[A]
-            frame_buffer_clean = frame_buffer_clean[A]
+            A = np.random.permutation(frame_buffer_clean.shape[0])
+        else:
+            A = np.arange(frame_buffer_clean.shape[0])
+        # we don't permute the noisy frames because we need to preserve context;
+        # we take matching windows in the assignment to noisy_batch below;
+        # this means we pass the permutation in config
+        frame_buffer_clean = frame_buffer_clean[A]
  
     else:
         frame_buffer_noisy = config['frame_buffer_noisy']
@@ -147,16 +159,21 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
 
     start = batch_index*batch_size
     end = min((batch_index+1)*batch_size,frame_buffer_noisy.shape[0])
-    config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new, 'offset':offset, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'frame_buffer_clean':frame_buffer_clean}
-    feed_dict = {noisy_pl:frame_buffer_noisy[start:end], clean_pl:frame_buffer_clean[start:end]}
+    config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new,
+              'offset':offset, 'offset_frames_noisy':offset_frames_noisy,
+              'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy,
+              'frame_buffer_clean':frame_buffer_clean, 'lr_ctx':lr_ctx, 'perm':A}
+    noisy_batch = np.stack(frame_buffer_noisy[A[i]:A[i]+1+2*lr_ctx] for i in range(start, end),
+                           axis = 0)
+    feed_dict = {noisy_pl:noisy_batch, clean_pl:frame_buffer_clean[start:end]}
     return (feed_dict, config)
         
 
     
     
-def placeholder_inputs(batch_size):
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,257))
-    clean_placeholder = tf.placeholder(tf.float32, shape=(None,257))
+def placeholder_inputs(num_feats, lr_ctx):
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats,2*lr_ctx+1))
+    clean_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats))
     keep_prob = tf.placeholder(tf.float32)
     is_training = tf.placeholder(tf.bool)
     return noisy_placeholder, clean_placeholder
@@ -170,9 +187,12 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
     frame_buffer_noisy = np.array([], dtype=np.float32)
     tot_loss_epoch = 0 
     totframes = 0
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
-
     start_time = time.time()
+    A = np.array([], dtype=np.int32)
+    
+    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
+
+    noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
     while(True):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/dev_dt_05_noisy/feats.scp", "data-spectrogram/dev_dt_05_clean/feats.scp", shuffle=False)
         feed_dict[is_training] = False
@@ -201,11 +221,13 @@ def run_training():
     offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)
+    A = np.array([], dtype=np.int32)
     phase = True
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
+    # Is there a reason we need to initialize this here when it gets initialized below?
+    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
 
     os.makedirs("model")
-    noisy_pl, clean_pl = placeholder_inputs(batch_size)
+    noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
     tot_loss_epoch = 0
     avg_loss_epoch = 0
     totframes = 0
@@ -216,7 +238,7 @@ def run_training():
     patience_increase = 2
 
     with tf.Graph().as_default():
-        noisy_pl, clean_pl = placeholder_inputs(batch_size)
+        noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
         predictions, is_training, keep_prob = create_generator(noisy_pl)
         loss_val = loss(predictions, clean_pl)
         train_op = training(loss_val,0.08,5312*10,0.96)
@@ -240,8 +262,8 @@ def run_training():
                 offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
                 frame_buffer_clean = np.array([], dtype=np.float32)
                 frame_buffer_noisy = np.array([], dtype=np.float32)
-
-                config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy}
+                A = np.array([], dtype=np.int32)
+                config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
 
 
 

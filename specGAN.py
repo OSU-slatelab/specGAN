@@ -180,7 +180,7 @@ def placeholder_inputs(num_feats, lr_ctx):
 def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
     batch_size=1024
     batch_index = 0
-    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257*(2*lr_ctx+1))
+    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
     offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)
@@ -222,8 +222,16 @@ def run_training():
     frame_buffer_noisy = np.array([], dtype=np.float32)
     A = np.array([], dtype=np.int32)
     phase = True
-    # Is there a reason we need to initialize this here when it gets initialized below?
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
+    config = {'batch_size':batch_size,
+              'batch_index':0,
+              'uid':0,
+              'offset':0,
+              'offset_frames_noisy':offset_frames_noisy,
+              'offset_frames_clean':offset_frames_clean,
+              'frame_buffer_clean':frame_buffer_clean,
+              'frame_buffer_noisy':frame_buffer_noisy,
+              'lr_ctx':5,
+              'perm':A}
 
     os.makedirs("model")
     noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
@@ -262,9 +270,16 @@ def run_training():
                 frame_buffer_clean = np.array([], dtype=np.float32)
                 frame_buffer_noisy = np.array([], dtype=np.float32)
                 A = np.array([], dtype=np.int32)
-                config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
-
-
+                config = {'batch_size':batch_size,
+                          'batch_index':0,
+                          'uid':0,
+                          'offset':0,
+                          'offset_frames_noisy':offset_frames_noisy,
+                          'offset_frames_clean':offset_frames_clean,
+                          'frame_buffer_clean':frame_buffer_clean,
+                          'frame_buffer_noisy':frame_buffer_noisy,
+                          'lr_ctx':5,
+                          'perm':A}
 
             _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value

@@ -101,6 +101,18 @@ def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_g
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
 
+def init_config():
+    batch_size=1024
+    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
+    offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
+    frame_buffer_clean = np.array([], dtype=np.float32)
+    frame_buffer_noisy = np.array([], dtype=np.float32)
+    A = np.array([], dtype=np.int32)
+
+    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
+    return config
+
+
 def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
 
     batch_index = config['batch_index']
@@ -180,24 +192,16 @@ def placeholder_inputs(num_feats, lr_ctx):
     return noisy_placeholder, clean_placeholder
 
 def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
-    batch_size=1024
-    batch_index = 0
-    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
-    offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
-    frame_buffer_clean = np.array([], dtype=np.float32)
-    frame_buffer_noisy = np.array([], dtype=np.float32)
-    tot_loss_epoch = 0 
+    config = init_config()
+    tot_loss_epoch = 0
     totframes = 0
-    start_time = time.time()
-    A = np.array([], dtype=np.int32)
-    
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
 
+    start_time = time.time()
     while(True):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/dev_dt_05_noisy/feats.scp", "data-spectrogram/dev_dt_05_clean/feats.scp", shuffle=False)
         feed_dict[is_training] = False
         feed_dict[keep_prob] = 1.0
-        if feed_dict[noisy_pl].shape[0]<batch_size:
+        if feed_dict[noisy_pl].shape[0]<config['batch_size']:
             loss_value = sess.run(loss_val, feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
             totframes += feed_dict[noisy_pl].shape[0]
@@ -215,17 +219,9 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
 
 
 def run_training():
-    batch_size=1024
-    batch_index = 0
-    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
-    offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
-    frame_buffer_clean = np.array([], dtype=np.float32)
-    frame_buffer_noisy = np.array([], dtype=np.float32)
-    A = np.array([], dtype=np.int32)
-    # Is there a reason we need to initialize this here when it gets initialized below?
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
-
-    os.makedirs("model")
+    config = init_config() 
+    if not os.path.isdir("model"):
+        os.makedirs("model")
     noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
     tot_loss_epoch = 0
     avg_loss_epoch = 0
@@ -255,17 +251,9 @@ def run_training():
             feed_dict[keep_prob] = 0.4
             feed_dict[is_training] = True
 
-            if feed_dict[noisy_pl].shape[0]<batch_size:
-                batch_index = 0
-                offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
-                offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
-                frame_buffer_clean = np.array([], dtype=np.float32)
-                frame_buffer_noisy = np.array([], dtype=np.float32)
-                A = np.array([], dtype=np.int32)
-                config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
-
-
-
+            if feed_dict[noisy_pl].shape[0]<config['batch_size']:
+                config = init_config()
+            
             _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
             totframes += feed_dict[noisy_pl].shape[0]

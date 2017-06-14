@@ -61,7 +61,7 @@ def create_generator(generator_inputs):
 
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        shape = [257*(2*5+1), 1024]
+        shape = [257*(2*5+1), 1024*2]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(generator_inputs, weight) + bias
@@ -70,7 +70,7 @@ def create_generator(generator_inputs):
         dropout1 = tf.nn.dropout(hidden, keep_prob)
     # Hidden 2
     with tf.variable_scope('hidden2'):
-        shape = [1024, 1024]
+        shape = [1024*2, 1024*2]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout1, weight) + bias
@@ -79,7 +79,7 @@ def create_generator(generator_inputs):
         dropout2 = tf.nn.dropout(hidden, keep_prob)
     # Linear
     with tf.variable_scope('linear'):
-        shape = [1024, 257]
+        shape = [1024*2, 257]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout2, weight) + bias
@@ -156,8 +156,10 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
         uid_new = config['uid']
         offset = config['offset']
 
+
     start = batch_index*batch_size
-    end = min((batch_index+1)*batch_size,frame_buffer_noisy.shape[0])
+    #D: i think end should point to frame_buffer_clean.shape[0] which is the non-padded array(check)
+    end = min((batch_index+1)*batch_size,frame_buffer_clean.shape[0])
     config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new,
               'offset':offset, 'offset_frames_noisy':offset_frames_noisy,
               'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy,
@@ -191,7 +193,6 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
     
     config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
 
-    noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
     while(True):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/dev_dt_05_noisy/feats.scp", "data-spectrogram/dev_dt_05_clean/feats.scp", shuffle=False)
         feed_dict[is_training] = False
@@ -221,17 +222,8 @@ def run_training():
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)
     A = np.array([], dtype=np.int32)
-    phase = True
-    config = {'batch_size':batch_size,
-              'batch_index':0,
-              'uid':0,
-              'offset':0,
-              'offset_frames_noisy':offset_frames_noisy,
-              'offset_frames_clean':offset_frames_clean,
-              'frame_buffer_clean':frame_buffer_clean,
-              'frame_buffer_noisy':frame_buffer_noisy,
-              'lr_ctx':5,
-              'perm':A}
+    # Is there a reason we need to initialize this here when it gets initialized below?
+    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
 
     os.makedirs("model")
     noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
@@ -270,16 +262,9 @@ def run_training():
                 frame_buffer_clean = np.array([], dtype=np.float32)
                 frame_buffer_noisy = np.array([], dtype=np.float32)
                 A = np.array([], dtype=np.int32)
-                config = {'batch_size':batch_size,
-                          'batch_index':0,
-                          'uid':0,
-                          'offset':0,
-                          'offset_frames_noisy':offset_frames_noisy,
-                          'offset_frames_clean':offset_frames_clean,
-                          'frame_buffer_clean':frame_buffer_clean,
-                          'frame_buffer_noisy':frame_buffer_noisy,
-                          'lr_ctx':5,
-                          'perm':A}
+                config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
+
+
 
             _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value

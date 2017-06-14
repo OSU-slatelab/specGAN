@@ -2,6 +2,7 @@
 data-spectrogram/
 *.ark
 *.scp
+log/
 
 # misc
 # tf reference implementation

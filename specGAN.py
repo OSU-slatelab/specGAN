@@ -177,7 +177,7 @@ def placeholder_inputs(num_feats, lr_ctx):
     is_training = tf.placeholder(tf.bool)
     return noisy_placeholder, clean_placeholder
 
-def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
+def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
     batch_size=1024
     batch_index = 0
     offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257*(2*lr_ctx+1))
@@ -280,7 +280,8 @@ def run_training():
                 summary_writer.add_summary(summary_str, step)
                 summary_writer.flush()
                 print ('Eval step:')
-                eval_loss, duration = do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob)
+                eval_loss, duration = do_eval(sess, loss_val, noisy_pl,
+                                              clean_pl, is_training, keep_prob, config['lr_ctx'])
                 
                 if eval_loss<best_validation_loss:
                     if eval_loss<best_validation_loss * improvement_threshold:

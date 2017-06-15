@@ -52,28 +52,33 @@ def loss(predictions, labels):
   return mse
 
 
-def batch_norm(x, name_scope, shape, training):
+def batch_norm(x, shape, training):
     '''Assume 2d [batch, values] tensor'''
 
-    with tf.variable_scope(name_scope):
-        scale = tf.get_variable('scale', shape[-1], initializer=tf.constant_initializer(0.1))
-        offset = tf.get_variable('offset', shape[-1])
+    scale = tf.get_variable('scale', shape[-1], initializer=tf.constant_initializer(0.1))
+    offset = tf.get_variable('offset', shape[-1])
 
-        pop_mean = tf.get_variable('pop_mean', shape[-1], initializer=tf.constant_initializer(0.0), trainable=False)
-        pop_var = tf.get_variable('pop_var', shape[-1], initializer=tf.constant_initializer(1.0), trainable=False)
-        batch_mean, batch_var = tf.nn.moments(x, [0])
+    pop_mean = tf.get_variable('pop_mean',
+                               shape[-1],
+                               initializer=tf.constant_initializer(0.0),
+                               trainable=False)
+    pop_var = tf.get_variable('pop_var',
+                              shape[-1],
+                              initializer=tf.constant_initializer(1.0),
+                              trainable=False)
+    batch_mean, batch_var = tf.nn.moments(x, [0])
 
-        train_mean_op = tf.assign(pop_mean, pop_mean * a.decay + batch_mean * (1 - a.decay))
-        train_var_op = tf.assign(pop_var, pop_var * a.decay + batch_var * (1 - a.decay))
+    train_mean_op = tf.assign(pop_mean, pop_mean * a.decay + batch_mean * (1 - a.decay))
+    train_var_op = tf.assign(pop_var, pop_var * a.decay + batch_var * (1 - a.decay))
 
-        def batch_statistics():
-            with tf.control_dependencies([train_mean_op, train_var_op]):
-                return tf.nn.batch_normalization(x, batch_mean, batch_var, offset, scale, epsilon)
+    def batch_statistics():
+        with tf.control_dependencies([train_mean_op, train_var_op]):
+            return tf.nn.batch_normalization(x, batch_mean, batch_var, offset, scale, epsilon)
 
-        def population_statistics():
-            return tf.nn.batch_normalization(x, pop_mean, pop_var, offset, scale, epsilon)
+    def population_statistics():
+        return tf.nn.batch_normalization(x, pop_mean, pop_var, offset, scale, epsilon)
 
-        return tf.cond(training, batch_statistics, population_statistics)
+    return tf.cond(training, batch_statistics, population_statistics)
 
 
 def create_generator(generator_inputs):
@@ -88,7 +93,7 @@ def create_generator(generator_inputs):
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(generator_inputs, weight) + bias
-        bn = batch_norm(linear, 'hidden1', shape, is_training)
+        bn = batch_norm(linear, shape, is_training)
         hidden = tf.nn.relu(bn)
         dropout1 = tf.nn.dropout(hidden, keep_prob)
     # Hidden 2
@@ -97,7 +102,7 @@ def create_generator(generator_inputs):
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout1, weight) + bias
-        bn = batch_norm(linear, 'hidden2', shape, is_training)
+        bn = batch_norm(linear, shape, is_training)
         hidden = tf.nn.relu(bn)
         dropout2 = tf.nn.dropout(hidden, keep_prob)
     # Linear
@@ -106,9 +111,50 @@ def create_generator(generator_inputs):
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout2, weight) + bias
-        bn = batch_norm(linear, 'linear', shape, is_training)
+        bn = batch_norm(linear, shape, is_training)
     return bn, is_training, keep_prob
+
+def fully_connected_batchnorm(inputs, shape, is_training):
+    weights = tf.get_variable("weight",
+                              shape,
+                              dtype=tf.float32,
+                              initializer=tf.random_normal_initializer(0,1))
+    biases = tf.get_variable("bias", shape[-1])
+    linear = tf.matmul(inputs, weights) + biases
+    bn = batch_norm(linear, shape, is_training)
+    return bn
     
+def create_discriminator(discrim_inputs, discrim_targets):
+
+    keep_prob = tf.placeholder(tf.float32)
+    is_training = tf.placeholder(tf.bool)
+
+    input = tf.concat([discrim_inputs, discrim_targets], axis = 1)
+    with tf.variable_scope('discrim_layer1'):
+        linear = fully_connected_batchnorm(input, (257*2, 1024), is_training)
+        relu = tf.nn.relu(linear)
+        dropout = tf.nn.dropout(relu, keep_prob)
+    with tf.variable_scope('discrim_layer2'):
+        linear = fully_connected_batchnorm(dropout, (1024, 1024), is_training)
+        relu = tf.nn.relu(linear)
+        dropout = tf.nn.dropout(relu, keep_prob)
+    with tf.variable_scope('discrim_layer3'):
+        linear = fully_connected_batchnorm(dropout, (1024, 1024), is_training)
+        relu = tf.nn.relu(linear)
+        dropout = tf.nn.dropout(relu, keep_prob)
+    with tf.variable_scope('discrim_layer4'):
+        linear = fully_connected_batchnorm(dropout, (1024, 1024), is_training)
+        relu = tf.nn.relu(linear)
+        dropout = tf.nn.dropout(relu, keep_prob)
+    with tf.variable_scope('discrim_layer5'):
+        linear = fully_connected_batchnorm(dropout, (1024, 1024), is_training)
+        relu = tf.nn.relu(linear)
+        dropout = tf.nn.dropout(relu, keep_prob)
+    with tf.variable_scope('discrim_layer6'):
+        linear = fully_connected_batchnorm(dropout, (1024, 1), is_training)
+        out = tf.sigmoid(linear)
+    return out
+
 
 def training(loss, num_steps_per_decay, decay_rate, max_global_norm=5.0):
     trainables = tf.trainable_variables()

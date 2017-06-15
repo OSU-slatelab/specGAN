@@ -4,6 +4,9 @@ data-spectrogram/
 *.scp
 log/
 
+# emacs autosaves
+*~
+
 # misc
 # tf reference implementation
 pix2pix.py

@@ -1,6 +1,6 @@
 from __future__ import absolute_import
 from __future__ import division
-#from __future__ import print_function
+from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
@@ -15,13 +15,36 @@ import math
 import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
-
 data_base_dir = os.getcwd()
-def read_mats(uid, offset, batch_size, file_name):
+parser = argparse.ArgumentParser()
+parser.add_argument("--noisy_training_file", default="data-spectrogram/train_si84_noisy/feats.scp", help="The input feature file for training")
+parser.add_argument("--noisy_dev_file", default="data-spectrogram/dev_dt_05_noisy/feats.scp", help="The input feature file for cross-validation")
+parser.add_argument("--clean_training_file", default="data-spectrogram/train_si84_clean/feats.scp", help="The feature file for clean training labels")
+parser.add_argument("--clean_dev_file", default="data-spectrogram/dev_dt_05_clean/feats.scp", help="The feature file for clean cross-validation labels")
+
+parser.add_argument("--batch_size", default=1024, type=int)
+parser.add_argument("--checkpoint", default=None, help="directory with checkpoint to resume training from or use for testing")
+#Training
+parser.add_argument("--lr", type=float, default = 0.08, help = "initial learning rate")
+parser.add_argument("--lr_decay", type=float, default=0.96, help = "learning rate decay")
+parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
+#Model
+parser.add_argument("--nlayers", type=int, default=2)
+parser.add_argument("--units", type=int, default=2048)
+parser.add_argument("--input_featdim", type=int, default=257*3)
+parser.add_argument("--output_featdim", type=int, default=257)
+parser.add_argument("--context", type=int, default=5)
+parser.add_argument("--epsilon", type=float, default=1e-3, help="parameter for batch normalization")
+parser.add_argument("--decay", type=float, default=0.999, help="parameter for batch normalization")
+
+a = parser.parse_args()
+
+
+def read_mats(uid, offset, file_name):
     #Read a buffer containing 10*batch_size+offset 
     #Returns a line number of the scp file
     scp_fn = path.join(data_base_dir, file_name)
-    ark_dict,uid = read_kaldi_ark_from_scp(uid, offset, batch_size, scp_fn, data_base_dir)
+    ark_dict,uid = read_kaldi_ark_from_scp(uid, offset, a.batch_size, scp_fn, data_base_dir)
     return ark_dict,uid
 
 def loss(predictions, labels):
@@ -29,7 +52,7 @@ def loss(predictions, labels):
   return mse
 
 
-def batch_norm(x, name_scope, shape, training, epsilon=1e-3, decay=0.999):
+def batch_norm(x, name_scope, shape, training):
     '''Assume 2d [batch, values] tensor'''
 
     with tf.variable_scope(name_scope):
@@ -40,8 +63,8 @@ def batch_norm(x, name_scope, shape, training, epsilon=1e-3, decay=0.999):
         pop_var = tf.get_variable('pop_var', shape[-1], initializer=tf.constant_initializer(1.0), trainable=False)
         batch_mean, batch_var = tf.nn.moments(x, [0])
 
-        train_mean_op = tf.assign(pop_mean, pop_mean * decay + batch_mean * (1 - decay))
-        train_var_op = tf.assign(pop_var, pop_var * decay + batch_var * (1 - decay))
+        train_mean_op = tf.assign(pop_mean, pop_mean * a.decay + batch_mean * (1 - a.decay))
+        train_var_op = tf.assign(pop_var, pop_var * a.decay + batch_var * (1 - a.decay))
 
         def batch_statistics():
             with tf.control_dependencies([train_mean_op, train_var_op]):
@@ -61,7 +84,7 @@ def create_generator(generator_inputs):
 
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        shape = [257*(2*5+1), 1024*2]
+        shape = [a.input_featdim*(2*a.context+1), 1024*2]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(generator_inputs, weight) + bias
@@ -87,44 +110,42 @@ def create_generator(generator_inputs):
     return bn, is_training, keep_prob
     
 
-def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_global_norm=5.0):
+def training(loss, num_steps_per_decay, decay_rate, max_global_norm=5.0):
     trainables = tf.trainable_variables()
     grads = tf.gradients(loss,trainables)
     grads, _ = tf.clip_by_global_norm(grads, clip_norm=max_global_norm)
     grad_var_pairs = zip(grads, trainables)
     global_step = tf.Variable(0, name='global_step', trainable=False)
     learning_rate = tf.train.exponential_decay(
-            initial_learning_rate, global_step, num_steps_per_decay,
+            a.lr, global_step, num_steps_per_decay,
             decay_rate, staircase=True)
     tf.summary.scalar('loss', loss)
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+    optimizer = tf.train.AdamOptimizer(learning_rate,a.beta1)
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
 
 def init_config():
-    batch_size=1024
-    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257)
+    offset_frames_noisy = np.array([], dtype=np.float32).reshape(0,257*3)
     offset_frames_clean = np.array([], dtype=np.float32).reshape(0,257)
     frame_buffer_clean = np.array([], dtype=np.float32)
     frame_buffer_noisy = np.array([], dtype=np.float32)
     A = np.array([], dtype=np.int32)
 
-    config = {'batch_size':batch_size, 'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
+    config = {'batch_index':0, 'uid':0, 'offset':0, 'offset_frames_noisy':offset_frames_noisy, 'offset_frames_clean':offset_frames_clean, 'frame_buffer_clean':frame_buffer_clean, 'frame_buffer_noisy':frame_buffer_noisy, 'lr_ctx':5, 'perm':A}
     return config
 
 
 def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
 
     batch_index = config['batch_index']
-    batch_size = config['batch_size']
     offset_frames_noisy = config['offset_frames_noisy']
     offset_frames_clean = config['offset_frames_clean']
     lr_ctx = config['lr_ctx']
     A = config['perm']
 
     def create_buffer(uid, offset):
-        ark_dict_noisy,uid_new= read_mats(uid,offset,batch_size,noisy_file)
-        ark_dict_clean,uid_new = read_mats(uid,offset,batch_size,clean_file)
+        ark_dict_noisy,uid_new= read_mats(uid,offset,noisy_file)
+        ark_dict_clean,uid_new = read_mats(uid,offset,clean_file)
 
         ids_noisy = sorted(ark_dict_noisy.keys())
         mats_noisy = [ark_dict_noisy[i] for i in ids_noisy]
@@ -138,11 +159,11 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
         nonlocal offset_frames_clean
         mats2_clean = np.concatenate((offset_frames_clean,mats2_clean),axis=0)
             
-        if mats2_noisy.shape[0]>=(batch_size*10):
-            offset_frames_noisy = mats2_noisy[batch_size*10:]
-            mats2_noisy = mats2_noisy[:batch_size*10]
-            offset_frames_clean = mats2_clean[batch_size*10:]
-            mats2_clean = mats2_clean[:batch_size*10]
+        if mats2_noisy.shape[0]>=(a.batch_size*10):
+            offset_frames_noisy = mats2_noisy[a.batch_size*10:]
+            mats2_noisy = mats2_noisy[:a.batch_size*10]
+            offset_frames_clean = mats2_clean[a.batch_size*10:]
+            mats2_clean = mats2_clean[:a.batch_size*10]
             offset = offset_frames_noisy.shape[0]
         return mats2_noisy, mats2_clean, uid_new, offset
 
@@ -169,10 +190,10 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
         offset = config['offset']
 
 
-    start = batch_index*batch_size
+    start = batch_index*a.batch_size
     #D: i think end should point to frame_buffer_clean.shape[0] which is the non-padded array(check)
-    end = min((batch_index+1)*batch_size,frame_buffer_clean.shape[0])
-    config = {'batch_size':batch_size, 'batch_index':(batch_index+1)%10, 'uid':uid_new,
+    end = min((batch_index+1)*a.batch_size,frame_buffer_clean.shape[0])
+    config = {'batch_index':(batch_index+1)%10, 'uid':uid_new,
               'offset':offset, 'offset_frames_noisy':offset_frames_noisy,
               'offset_frames_clean':offset_frames_clean, 'frame_buffer_noisy':frame_buffer_noisy,
               'frame_buffer_clean':frame_buffer_clean, 'lr_ctx':lr_ctx, 'perm':A}
@@ -185,7 +206,7 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     
     
 def placeholder_inputs(num_feats, lr_ctx):
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats*(2*lr_ctx+1)))
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats*3*(2*lr_ctx+1)))
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,num_feats))
     keep_prob = tf.placeholder(tf.float32)
     is_training = tf.placeholder(tf.bool)
@@ -201,7 +222,7 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob, lr_ctx):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, "data-spectrogram/dev_dt_05_noisy/feats.scp", "data-spectrogram/dev_dt_05_clean/feats.scp", shuffle=False)
         feed_dict[is_training] = False
         feed_dict[keep_prob] = 1.0
-        if feed_dict[noisy_pl].shape[0]<config['batch_size']:
+        if feed_dict[noisy_pl].shape[0]<a.batch_size:
             loss_value = sess.run(loss_val, feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
             totframes += feed_dict[noisy_pl].shape[0]
@@ -222,7 +243,6 @@ def run_training():
     config = init_config() 
     if not os.path.isdir("model"):
         os.makedirs("model")
-    noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
     tot_loss_epoch = 0
     avg_loss_epoch = 0
     totframes = 0
@@ -236,7 +256,7 @@ def run_training():
         noisy_pl, clean_pl = placeholder_inputs(257, config['lr_ctx'])
         predictions, is_training, keep_prob = create_generator(noisy_pl)
         loss_val = loss(predictions, clean_pl)
-        train_op = training(loss_val,0.08,5312*10,0.96)
+        train_op = training(loss_val,0.08,0.9,5312*10,0.96)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
@@ -251,7 +271,7 @@ def run_training():
             feed_dict[keep_prob] = 0.4
             feed_dict[is_training] = True
 
-            if feed_dict[noisy_pl].shape[0]<config['batch_size']:
+            if feed_dict[noisy_pl].shape[0]<a.batch_size:
                 config = init_config()
             
             _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)

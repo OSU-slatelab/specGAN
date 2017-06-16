@@ -16,6 +16,13 @@ import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
+EPS = 1e-12
+gan_weight = 1.0
+l1_weight = 100.0
+lr = 0.0002
+beta1 = 0.5
+Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_grads_and_vars, train")
+
 data_base_dir = os.getcwd()
 def read_mats(uid, offset, batch_size, file_name):
     #Read a buffer containing 10*batch_size+offset 
@@ -101,10 +108,7 @@ def fully_connected_batchnorm(inputs, shape, is_training):
     bn = batch_norm(linear, shape, is_training)
     return bn
     
-def create_discriminator(discrim_inputs, discrim_targets):
-
-    keep_prob = tf.placeholder(tf.float32)
-    is_training = tf.placeholder(tf.bool)
+def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training):
 
     input = tf.concat([discrim_inputs, discrim_targets], axis = 1)
     with tf.variable_scope('discrim_layer1'):
@@ -132,6 +136,59 @@ def create_discriminator(discrim_inputs, discrim_targets):
         out = tf.sigmoid(linear)
     return out
 
+def create_adversarial_model(inputs, targets):
+
+    with tf.variable_scope('generator'):
+        outputs, keep_prob, is_training = create_generator(inputs)
+
+    with tf.name_scope('real_discriminator'):
+        with tf.variable_scope('discriminator'):
+            predict_real = create_discriminator(inputs, targets, keep_prob, is_training)
+
+    with tf.name_scope('fake_discriminator'):
+        with tf.variable_scope('discriminator', reuse = True):
+            predict_fake = create_discriminator(inputs, outputs, keep_prob, is_training)
+
+    # loss functions from pix2pix
+    with tf.name_scope('discriminator_loss'):
+        discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS)
+                                        + tf.log(1 - predict_fake + EPS)))
+
+    with tf.name_scope('generator_loss'):
+        gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
+        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
+        gen_loss = gen_loss_GAN * gan_weight + gen_loss_L1 * l1_weight
+
+    with tf.name_scope("discriminator_train"):
+        discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
+        discrim_optim = tf.train.AdamOptimizer(lr, beta1)
+        discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
+        discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
+
+    with tf.name_scope("generator_train"):
+        with tf.control_dependencies([discrim_train]):
+            gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+            gen_optim = tf.train.AdamOptimizer(lr, beta1)
+            gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
+            gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
+
+    ema = tf.train.ExponentialMovingAverage(decay=0.99)
+    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
+
+    global_step = tf.contrib.framework.get_or_create_global_step()
+    incr_global_step = tf.assign(global_step, global_step+1)
+
+    return Model(
+        predict_real=predict_real,
+        predict_fake=predict_fake,
+        discrim_loss=ema.average(discrim_loss),
+        discrim_grads_and_vars=discrim_grads_and_vars,
+        gen_loss_GAN=ema.average(gen_loss_GAN),
+        gen_loss_L1=ema.average(gen_loss_L1),
+        gen_grads_and_vars=gen_grads_and_vars,
+        outputs=outputs,
+        train=tf.group(update_losses, incr_global_step, gen_train),
+    )
 
 def training(loss, initial_learning_rate, num_steps_per_decay, decay_rate, max_global_norm=5.0):
     trainables = tf.trainable_variables()

@@ -96,12 +96,7 @@ def batch_norm(x, shape, training):
     return tf.cond(training, batch_statistics, population_statistics)
 
 
-def create_generator(generator_inputs):
-
-    #Create additional placeholder inputs
-    keep_prob = tf.placeholder(tf.float32)
-    is_training = tf.placeholder(tf.bool)
-
+def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 1
     with tf.variable_scope('hidden1'):
         shape = [a.input_featdim*(2*a.context+1), a.gen_units]
@@ -127,7 +122,7 @@ def create_generator(generator_inputs):
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout2, weight) + bias
         bn = batch_norm(linear, shape, is_training)
-    return bn, is_training, keep_prob
+    return bn
 
 def fully_connected_batchnorm(inputs, shape, is_training):
     weights = tf.get_variable("weight",
@@ -167,10 +162,10 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
         out = tf.sigmoid(linear)
     return out
 
-def create_adversarial_model(inputs, targets):
+def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.variable_scope('generator'):
-        outputs, is_training, keep_prob = create_generator(inputs)
+        outputs = create_generator(inputs, keep_prob, is_training)
 
     with tf.name_scope('real_discriminator'):
         with tf.variable_scope('discriminator'):
@@ -331,7 +326,7 @@ def placeholder_inputs():
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim))
     keep_prob = tf.placeholder(tf.float32)
     is_training = tf.placeholder(tf.bool)
-    return noisy_placeholder, clean_placeholder
+    return noisy_placeholder, clean_placeholder, keep_prob, is_training
 
 def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
     config = init_config()
@@ -371,15 +366,16 @@ def run_training():
     patience = a.patience
 
     with tf.Graph().as_default():
-        noisy_pl, clean_pl = placeholder_inputs()
+        noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         if a.objective == "mse":
-            predictions, is_training, keep_prob = create_generator(noisy_pl)
+            predictions = create_generator(noisy_pl, keep_prob, is_training)
             loss_val = loss(predictions, clean_pl)
             train_op = training(loss_val)
         elif a.objective == "adv":
-            model = create_adversarial_model(noisy_pl, clean_pl)
+            model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
             train_op = model.train
             loss_val = model.discrim_loss
+            tf.summary.scalar('loss', model.discrim_loss)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()

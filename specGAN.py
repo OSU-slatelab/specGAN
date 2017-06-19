@@ -17,10 +17,6 @@ from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
 EPS = 1e-12
-gan_weight = 1.0
-l1_weight = 100.0
-lr = 0.0002
-beta1 = 0.5
 Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_grads_and_vars, train")
 
 data_base_dir = os.getcwd()
@@ -35,8 +31,11 @@ parser.add_argument("--checkpoint", default=None, help="directory with checkpoin
 #Training
 parser.add_argument("--lr", type=float, default = 0.08, help = "initial learning rate")
 parser.add_argument("--lr_decay", type=float, default=0.96, help = "learning rate decay")
+parser.add_argument("--gan_weight", type=float, default=1.0, help = "weight of GAN loss in generator training")
+parser.add_argument("--l1_weight", type=float, default=100.0, help = "weight of L1 loss in generator training")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
+parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv"])
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
 parser.add_argument("--disc_units", type=int, default=1024)
@@ -136,15 +135,15 @@ def fully_connected_batchnorm(inputs, shape, is_training):
                               dtype=tf.float32,
                               initializer=tf.random_normal_initializer(0,1))
     biases = tf.get_variable("bias", shape[-1])
-    linear = tf.matmul(inputs, weights) + biases
-    bn = batch_norm(linear, shape, is_training)
+    ab = tf.matmul(inputs, weights) + biases
+    bn = batch_norm(ab, shape, is_training)
     return bn
     
 def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training):
 
     input = tf.concat([discrim_inputs, discrim_targets], axis = 1)
     with tf.variable_scope('discrim_layer1'):
-        linear = fully_connected_batchnorm(input, (a.output_featdim*2, a.disc_units), is_training)
+        linear = fully_connected_batchnorm(input, (a.output_featdim*(2*a.context+2), a.disc_units), is_training)
         relu = tf.nn.relu(linear)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer2'):
@@ -171,7 +170,7 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
 def create_adversarial_model(inputs, targets):
 
     with tf.variable_scope('generator'):
-        outputs, keep_prob, is_training = create_generator(inputs)
+        outputs, is_training, keep_prob = create_generator(inputs)
 
     with tf.name_scope('real_discriminator'):
         with tf.variable_scope('discriminator'):
@@ -189,18 +188,18 @@ def create_adversarial_model(inputs, targets):
     with tf.name_scope('generator_loss'):
         gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
-        gen_loss = gen_loss_GAN * gan_weight + gen_loss_L1 * l1_weight
+        gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-        discrim_optim = tf.train.AdamOptimizer(lr, beta1)
+        discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
         with tf.control_dependencies([discrim_train]):
             gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gen_optim = tf.train.AdamOptimizer(lr, beta1)
+            gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
             gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
             gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
@@ -373,9 +372,14 @@ def run_training():
 
     with tf.Graph().as_default():
         noisy_pl, clean_pl = placeholder_inputs()
-        predictions, is_training, keep_prob = create_generator(noisy_pl)
-        loss_val = loss(predictions, clean_pl)
-        train_op = training(loss_val) 
+        if a.objective == "mse":
+            predictions, is_training, keep_prob = create_generator(noisy_pl)
+            loss_val = loss(predictions, clean_pl)
+            train_op = training(loss_val)
+        elif a.objective == "adv":
+            model = create_adversarial_model(noisy_pl, clean_pl)
+            train_op = model.train
+            loss_val = model.discrim_loss
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()

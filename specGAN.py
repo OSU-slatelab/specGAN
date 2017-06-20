@@ -228,11 +228,11 @@ def training(loss):
     grads, _ = tf.clip_by_global_norm(grads, clip_norm=a.max_global_norm)
     grad_var_pairs = zip(grads, trainables)
     global_step = tf.Variable(0, name='global_step', trainable=False)
-    learning_rate = tf.train.exponential_decay(
-            a.lr, global_step, a.num_steps_per_decay,
-            a.decay_rate, staircase=True)
+    #learning_rate = tf.train.exponential_decay(
+    #        a.lr, global_step, a.num_steps_per_decay,
+    #        a.decay_rate, staircase=True)
     tf.summary.scalar('loss', loss)
-    optimizer = tf.train.AdamOptimizer(learning_rate,a.beta1)
+    optimizer = tf.train.AdamOptimizer(a.lr,a.beta1)
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
 

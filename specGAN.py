@@ -35,8 +35,11 @@ parser.add_argument("--checkpoint", default=None, help="directory with checkpoin
 #Training
 parser.add_argument("--lr", type=float, default = 0.08, help = "initial learning rate")
 parser.add_argument("--lr_decay", type=float, default=0.96, help = "learning rate decay")
+parser.add_argument("--gan_weight", type=float, default=1.0, help = "weight of GAN loss in generator training")
+parser.add_argument("--l1_weight", type=float, default=100.0, help = "weight of L1 loss in generator training")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
+parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv"])
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
 parser.add_argument("--disc_units", type=int, default=1024)
@@ -97,12 +100,7 @@ def batch_norm(x, shape, training):
     return tf.cond(training, batch_statistics, population_statistics)
 
 
-def create_generator(generator_inputs):
-
-    #Create additional placeholder inputs
-    keep_prob = tf.placeholder(tf.float32)
-    is_training = tf.placeholder(tf.bool)
-
+def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 1
     with tf.variable_scope('hidden1'):
         shape = [a.input_featdim*(2*a.context+1), a.gen_units]
@@ -128,7 +126,7 @@ def create_generator(generator_inputs):
         bias = tf.get_variable("bias", shape[-1])
         linear = tf.matmul(dropout2, weight) + bias
         bn = batch_norm(linear, shape, is_training)
-    return bn, is_training, keep_prob
+    return bn
 
 def fully_connected_batchnorm(inputs, shape, is_training):
     weights = tf.get_variable("weight",
@@ -136,15 +134,15 @@ def fully_connected_batchnorm(inputs, shape, is_training):
                               dtype=tf.float32,
                               initializer=tf.random_normal_initializer(0,1))
     biases = tf.get_variable("bias", shape[-1])
-    linear = tf.matmul(inputs, weights) + biases
-    bn = batch_norm(linear, shape, is_training)
+    ab = tf.matmul(inputs, weights) + biases
+    bn = batch_norm(ab, shape, is_training)
     return bn
     
 def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training):
 
     input = tf.concat([discrim_inputs, discrim_targets], axis = 1)
     with tf.variable_scope('discrim_layer1'):
-        linear = fully_connected_batchnorm(input, (a.output_featdim*2, a.disc_units), is_training)
+        linear = fully_connected_batchnorm(input, (a.output_featdim*(2*a.context+2), a.disc_units), is_training)
         relu = tf.nn.relu(linear)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer2'):
@@ -168,10 +166,10 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
         out = tf.sigmoid(linear)
     return out
 
-def create_adversarial_model(inputs, targets):
+def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.variable_scope('generator'):
-        outputs, keep_prob, is_training = create_generator(inputs)
+        outputs = create_generator(inputs, keep_prob, is_training)
 
     with tf.name_scope('real_discriminator'):
         with tf.variable_scope('discriminator'):
@@ -189,18 +187,18 @@ def create_adversarial_model(inputs, targets):
     with tf.name_scope('generator_loss'):
         gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
-        gen_loss = gen_loss_GAN * gan_weight + gen_loss_L1 * l1_weight
+        gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-        discrim_optim = tf.train.AdamOptimizer(lr, beta1)
+        discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
         with tf.control_dependencies([discrim_train]):
             gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gen_optim = tf.train.AdamOptimizer(lr, beta1)
+            gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
             gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
             gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
@@ -332,7 +330,7 @@ def placeholder_inputs():
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim))
     keep_prob = tf.placeholder(tf.float32)
     is_training = tf.placeholder(tf.bool)
-    return noisy_placeholder, clean_placeholder
+    return noisy_placeholder, clean_placeholder, keep_prob, is_training
 
 def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
     config = init_config()
@@ -372,10 +370,16 @@ def run_training():
     patience = a.patience
 
     with tf.Graph().as_default():
-        noisy_pl, clean_pl = placeholder_inputs()
-        predictions, is_training, keep_prob = create_generator(noisy_pl)
-        loss_val = loss(predictions, clean_pl)
-        train_op = training(loss_val) 
+        noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
+        if a.objective == "mse":
+            predictions = create_generator(noisy_pl, keep_prob, is_training)
+            loss_val = loss(predictions, clean_pl)
+            train_op = training(loss_val)
+        elif a.objective == "adv":
+            model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
+            train_op = model.train
+            loss_val = model.discrim_loss
+            tf.summary.scalar('loss', model.discrim_loss)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()

@@ -17,11 +17,7 @@ from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
 EPS = 1e-12
-gan_weight = 1.0
-l1_weight = 100.0
-lr = 0.0002
-beta1 = 0.5
-Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_grads_and_vars, train")
+Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_loss, gen_grads_and_vars, train")
 
 data_base_dir = os.getcwd()
 parser = argparse.ArgumentParser()
@@ -203,7 +199,7 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
             gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
     ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
+    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss])
 
     global_step = tf.contrib.framework.get_or_create_global_step()
     incr_global_step = tf.assign(global_step, global_step+1)
@@ -215,6 +211,7 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
         discrim_grads_and_vars=discrim_grads_and_vars,
         gen_loss_GAN=ema.average(gen_loss_GAN),
         gen_loss_L1=ema.average(gen_loss_L1),
+        gen_loss=ema.average(gen_loss),
         gen_grads_and_vars=gen_grads_and_vars,
         outputs=outputs,
         train=tf.group(update_losses, incr_global_step, gen_train),
@@ -378,13 +375,13 @@ def run_training():
         elif a.objective == "adv":
             model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
             train_op = model.train
-            loss_val = model.discrim_loss
-            tf.summary.scalar('loss', model.discrim_loss)
+            loss_val = model.gen_loss
+            #tf.summary.scalar('loss', loss_val)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
         sess = tf.Session()
-        summary_writer = tf.summary.FileWriter("log", sess.graph)
+        #summary_writer = tf.summary.FileWriter("log", sess.graph)
 
         sess.run(init)
         start_time = time.time()
@@ -407,9 +404,9 @@ def run_training():
                 duration = time.time() - start_time
                 start_time = time.time()
                 print ('Step %d: loss = %.2f (%.3f sec)' % (step, avg_loss_epoch, duration))
-                summary_str = sess.run(summary, feed_dict=feed_dict)
-                summary_writer.add_summary(summary_str, step)
-                summary_writer.flush()
+                #summary_str = sess.run(summary, feed_dict=feed_dict)
+                #summary_writer.add_summary(summary_str, step)
+                #summary_writer.flush()
                 print ('Eval step:')
                 eval_loss, duration = do_eval(sess, loss_val, noisy_pl,
                                               clean_pl, is_training, keep_prob)

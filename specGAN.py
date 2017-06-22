@@ -430,7 +430,7 @@ def run_training():
                         patience = max(patience, (step+1)* a.patience_increase)
                     best_validation_loss = eval_loss
                     best_iter = step
-                    save_path = saver.save(sess, "model/model.ckpt"+str(step))
+                    save_path = saver.save(sess, "model/model.ckpt", global_step=step)
             if patience<=step:
                 break
             step = step + 1

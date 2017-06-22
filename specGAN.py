@@ -36,6 +36,7 @@ parser.add_argument("--l1_weight", type=float, default=100.0, help = "weight of 
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
 parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv"])
+parser.add_argument("--discrim_cond", type=str, default="full", choices=["full", "central"], help = "determines the form of the conditioning input to the discriminator; \"full\" uses full context window, and \"central\" uses only the central frame")
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
 parser.add_argument("--disc_units", type=int, default=1024)
@@ -138,7 +139,15 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
 
     input = tf.concat([discrim_inputs, discrim_targets], axis = 1)
     with tf.variable_scope('discrim_layer1'):
-        linear = fully_connected_batchnorm(input, (a.output_featdim*(2*a.context+2), a.disc_units), is_training)
+        cond_input_frames = 0 # this should always get set correctly below
+        if a.discrim_cond == "full":
+            cond_input_frames = 2*a.context+1
+        elif a.discrim_cond == "central":
+            cond_input_frames = 1
+        linear = fully_connected_batchnorm(input,
+                                           (a.output_featdim*(cond_input_frames+1),
+                                            a.disc_units),
+                                           is_training)
         relu = tf.nn.relu(linear)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer2'):
@@ -163,17 +172,22 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
     return out
 
 def create_adversarial_model(inputs, targets, keep_prob, is_training):
-
+    disc_cond_inputs = None
+    if a.discrim_cond == "full":
+        disc_cond_inputs = inputs
+    elif a.discrim_cond == "central":
+        disc_cond_inputs = tf.slice(inputs, [0, a.context*a.input_featdim], [-1, a.input_featdim])
+        
     with tf.variable_scope('generator'):
         outputs = create_generator(inputs, keep_prob, is_training)
 
     with tf.name_scope('real_discriminator'):
         with tf.variable_scope('discriminator'):
-            predict_real = create_discriminator(inputs, targets, keep_prob, is_training)
+            predict_real = create_discriminator(disc_cond_inputs, targets, keep_prob, is_training)
 
     with tf.name_scope('fake_discriminator'):
         with tf.variable_scope('discriminator', reuse = True):
-            predict_fake = create_discriminator(inputs, outputs, keep_prob, is_training)
+            predict_fake = create_discriminator(disc_cond_inputs, outputs, keep_prob, is_training)
 
     # loss functions from pix2pix
     with tf.name_scope('discriminator_loss'):

@@ -71,8 +71,8 @@ def loss(predictions, labels):
 def batch_norm(x, shape, training):
     '''Assume 2d [batch, values] tensor'''
 
-    scale = tf.get_variable('scale', shape[-1], initializer=tf.constant_initializer(0.1))
-    offset = tf.get_variable('offset', shape[-1])
+    scale = tf.get_variable('scale', shape[-1],  dtype=tf.float32, initializer=tf.random_normal_initializer(1.0, 0.02)) # initializer=tf.constant_initializer(0.1))
+    offset = tf.get_variable('offset', shape[-1],  initializer=tf.zeros_initializer())
 
     pop_mean = tf.get_variable('pop_mean',
                                shape[-1],
@@ -101,8 +101,8 @@ def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 1
     with tf.variable_scope('hidden1'):
         shape = [a.input_featdim*(2*a.context+1), a.gen_units]
-        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", shape[-1])
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
+        bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(generator_inputs, weight) + bias
         bn = batch_norm(linear, shape, is_training)
         hidden = tf.nn.relu(bn)
@@ -110,8 +110,8 @@ def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 2
     with tf.variable_scope('hidden2'):
         shape = [a.gen_units, a.gen_units]
-        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", shape[-1])
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
+        bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(dropout1, weight) + bias
         bn = batch_norm(linear, shape, is_training)
         hidden = tf.nn.relu(bn)
@@ -119,8 +119,8 @@ def create_generator(generator_inputs, keep_prob, is_training):
     # Linear
     with tf.variable_scope('linear'):
         shape = [a.gen_units, a.output_featdim]
-        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,1))
-        bias = tf.get_variable("bias", shape[-1])
+        weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
+        bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(dropout2, weight) + bias
         bn = batch_norm(linear, shape, is_training)
     return bn
@@ -129,8 +129,8 @@ def fully_connected_batchnorm(inputs, shape, is_training):
     weights = tf.get_variable("weight",
                               shape,
                               dtype=tf.float32,
-                              initializer=tf.random_normal_initializer(0,1))
-    biases = tf.get_variable("bias", shape[-1])
+                              initializer=tf.random_normal_initializer(0,0.02))
+    biases = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
     ab = tf.matmul(inputs, weights) + biases
     bn = batch_norm(ab, shape, is_training)
     return bn
@@ -172,6 +172,9 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
     return out
 
 def create_adversarial_model(inputs, targets, keep_prob, is_training):
+
+    global_step = tf.contrib.framework.get_or_create_global_step()
+
     disc_cond_inputs = None
     if a.discrim_cond == "full":
         disc_cond_inputs = inputs
@@ -191,8 +194,7 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     # loss functions from pix2pix
     with tf.name_scope('discriminator_loss'):
-        discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS)
-                                        + tf.log(1 - predict_fake + EPS)))
+        discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS) + tf.log(1 - predict_fake + EPS)))
 
     with tf.name_scope('generator_loss'):
         gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
@@ -201,23 +203,32 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
+        print("Discrim_tvars length: ", len(discrim_tvars))
+        print([i.name for i in discrim_tvars])
         discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
         with tf.control_dependencies([discrim_train]):
-            gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-            gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
-            gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
+            gd_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+            gd_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            gd_grads_and_vars = gd_optim.compute_gradients(gen_loss, var_list=gd_tvars)
+            gd_train = gd_optim.apply_gradients(gd_grads_and_vars)
+        g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
+        g_train = g_optim.apply_gradients(g_grads_and_vars)
+        even = tf.equal(tf.mod(global_step, 2), 0)
+        gen_train = tf.cond(even, lambda: gd_train, lambda: g_train)
+            
 
+            
     ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss])
-
-    global_step = tf.contrib.framework.get_or_create_global_step()
+    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
     incr_global_step = tf.assign(global_step, global_step+1)
 
+            
     return Model(
         predict_real=predict_real,
         predict_fake=predict_fake,
@@ -225,8 +236,8 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
         discrim_grads_and_vars=discrim_grads_and_vars,
         gen_loss_GAN=ema.average(gen_loss_GAN),
         gen_loss_L1=ema.average(gen_loss_L1),
-        gen_loss=ema.average(gen_loss),
-        gen_grads_and_vars=gen_grads_and_vars,
+        gen_loss=gen_loss,
+        gen_grads_and_vars=gd_grads_and_vars,
         outputs=outputs,
         train=tf.group(update_losses, incr_global_step, gen_train),
     )
@@ -351,8 +362,8 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
     start_time = time.time()
     while(True):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, a.noisy_dev_file, a.clean_dev_file, shuffle=False)
-        feed_dict[is_training] = False
-        feed_dict[keep_prob] = 1.0
+        feed_dict[is_training] = True # trying batch normalization
+        feed_dict[keep_prob] = a.keep_prob # doing test-time dropout
         if feed_dict[noisy_pl].shape[0]<a.batch_size:
             loss_value = sess.run(loss_val, feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
@@ -382,15 +393,24 @@ def run_training():
 
     with tf.Graph().as_default():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
+        fetches = {}
         if a.objective == "mse":
             predictions = create_generator(noisy_pl, keep_prob, is_training)
-            loss_val = loss(predictions, clean_pl)
-            train_op = training(loss_val)
+            fetches['loss'] = loss(predictions, clean_pl)
+            fetches['train'] = training(fetches['loss'])
+            # loss_val = fetches['loss']
+            # train_op = training(loss_val)
         elif a.objective == "adv":
             model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
-            train_op = model.train
-            loss_val = model.gen_loss
-            #tf.summary.scalar('loss', loss_val)
+            fetches['L1_loss'] = model.gen_loss_L1
+            fetches['GAN_loss'] = model.gen_loss_GAN
+            fetches['discrim_loss'] = model.discrim_loss
+            fetches['loss'] = model.gen_loss
+            fetches['train'] = model.train
+            fetches['predict_real'] = model.predict_real
+            fetches['predict_fake'] = model.predict_fake
+            # loss_val = fetches['loss']
+            # tf.summary.scalar('loss', loss_val)
         summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         saver = tf.train.Saver()
@@ -408,7 +428,13 @@ def run_training():
             if feed_dict[noisy_pl].shape[0]<a.batch_size:
                 config = init_config()
             
-            _, loss_value = sess.run([train_op, loss_val], feed_dict=feed_dict)
+            result = sess.run(fetches, feed_dict=feed_dict)
+            if a.objective == "adv":
+                print ('L1: %.2f  GAN: %.6f  Discrim: %.6f'
+                       % (result['L1_loss'], result['GAN_loss'], result['discrim_loss']))
+                print ('predict_real: ', result['predict_real'])
+                print ('predict_fake: ', result['predict_fake'])
+            loss_value = result['loss']
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
             totframes += feed_dict[noisy_pl].shape[0]
 
@@ -417,12 +443,17 @@ def run_training():
                 tot_loss_epoch = 0   
                 duration = time.time() - start_time
                 start_time = time.time()
-                print ('Step %d: loss = %.2f (%.3f sec)' % (step, avg_loss_epoch, duration))
+                print ('Step %d: loss = %.6f (%.3f sec)' % (step, avg_loss_epoch, duration))
+                if a.objective == "adv":
+                    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f'
+                           % (result['L1_loss'], result['GAN_loss'], result['discrim_loss']))
+                    print ('predict_real: ', result['predict_real'])
+                    print ('predict_fake: ', result['predict_fake'])
                 #summary_str = sess.run(summary, feed_dict=feed_dict)
                 #summary_writer.add_summary(summary_str, step)
                 #summary_writer.flush()
                 print ('Eval step:')
-                eval_loss, duration = do_eval(sess, loss_val, noisy_pl,
+                eval_loss, duration = do_eval(sess, fetches['loss'], noisy_pl,
                                               clean_pl, is_training, keep_prob)
                 
                 if eval_loss<best_validation_loss:

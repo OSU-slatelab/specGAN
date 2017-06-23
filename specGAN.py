@@ -40,9 +40,9 @@ parser.add_argument("--discrim_cond", type=str, default="full", choices=["full",
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
 parser.add_argument("--disc_units", type=int, default=1024)
-parser.add_argument("--input_featdim", type=int, default=257*3)
+parser.add_argument("--input_featdim", type=int, default=257)
 parser.add_argument("--output_featdim", type=int, default=257)
-parser.add_argument("--context", type=int, default=5)
+parser.add_argument("--context", type=int, default=3)
 parser.add_argument("--epsilon", type=float, default=1e-3, help="parameter for batch normalization")
 parser.add_argument("--decay", type=float, default=0.999, help="parameter for batch normalization")
 parser.add_argument("--num_steps_per_decay", type=int, default=5312*10, help="number of steps after learning rate decay")
@@ -66,6 +66,18 @@ def read_mats(uid, offset, file_name):
 def loss(predictions, labels):
   mse = tf.reduce_mean(tf.squared_difference(predictions, labels))
   return mse
+
+def lrelu(x, a):
+    with tf.name_scope("lrelu"):
+        # adding these together creates the leak part and linear part
+        # then cancels them out by subtracting/adding an absolute value term
+        # leak: a*x/2 - a*abs(x)/2
+        # linear: x/2 + abs(x)/2
+
+        # this block looks like it has 2 inputs on the graph unless we do this
+        x = tf.identity(x)
+        return (0.5 * (1 + a)) * x + (0.5 * (1 - a)) * tf.abs(x)
+
 
 
 def batch_norm(x, shape, training):
@@ -105,7 +117,7 @@ def create_generator(generator_inputs, keep_prob, is_training):
         bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(generator_inputs, weight) + bias
         bn = batch_norm(linear, shape, is_training)
-        hidden = tf.nn.relu(bn)
+        hidden = lrelu(bn,0.2)
         dropout1 = tf.nn.dropout(hidden, keep_prob)
     # Hidden 2
     with tf.variable_scope('hidden2'):
@@ -114,7 +126,7 @@ def create_generator(generator_inputs, keep_prob, is_training):
         bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(dropout1, weight) + bias
         bn = batch_norm(linear, shape, is_training)
-        hidden = tf.nn.relu(bn)
+        hidden = lrelu(bn,0.2)
         dropout2 = tf.nn.dropout(hidden, keep_prob)
     # Linear
     with tf.variable_scope('linear'):
@@ -145,26 +157,26 @@ def create_discriminator(discrim_inputs, discrim_targets, keep_prob, is_training
         elif a.discrim_cond == "central":
             cond_input_frames = 1
         linear = fully_connected_batchnorm(input,
-                                           (a.output_featdim*(cond_input_frames+1),
+                                           (a.input_featdim*(cond_input_frames) + a.output_featdim,
                                             a.disc_units),
                                            is_training)
-        relu = tf.nn.relu(linear)
+        relu = lrelu(linear,0.2)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer2'):
         linear = fully_connected_batchnorm(dropout, (a.disc_units, a.disc_units), is_training)
-        relu = tf.nn.relu(linear)
+        relu = lrelu(linear,0.2)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer3'):
         linear = fully_connected_batchnorm(dropout, (a.disc_units, a.disc_units), is_training)
-        relu = tf.nn.relu(linear)
+        relu = lrelu(linear,0.2)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer4'):
         linear = fully_connected_batchnorm(dropout, (a.disc_units, a.disc_units), is_training)
-        relu = tf.nn.relu(linear)
+        relu = lrelu(linear,0.2)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer5'):
         linear = fully_connected_batchnorm(dropout, (a.disc_units, a.disc_units), is_training)
-        relu = tf.nn.relu(linear)
+        relu = lrelu(linear,0.2)
         dropout = tf.nn.dropout(relu, keep_prob)
     with tf.variable_scope('discrim_layer6'):
         linear = fully_connected_batchnorm(dropout, (a.disc_units, 1), is_training)
@@ -194,7 +206,10 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     # loss functions from pix2pix
     with tf.name_scope('discriminator_loss'):
-        discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS) + tf.log(1 - predict_fake + EPS)))
+        d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_real, labels=tf.ones_like(predict_real)))
+        d_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_fake, labels=tf.zeros_like(predict_fake)))
+        discrim_loss = d_loss_real + d_loss_fake
+        #discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS) + tf.log(1 - predict_fake + EPS)))
 
     with tf.name_scope('generator_loss'):
         gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
@@ -203,43 +218,44 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-        print("Discrim_tvars length: ", len(discrim_tvars))
-        print([i.name for i in discrim_tvars])
+        #print("Discrim_tvars length: ", len(discrim_tvars))
+        #print([i.name for i in discrim_tvars])
         discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
-        with tf.control_dependencies([discrim_train]):
-            gd_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gd_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-            gd_grads_and_vars = gd_optim.compute_gradients(gen_loss, var_list=gd_tvars)
-            gd_train = gd_optim.apply_gradients(gd_grads_and_vars)
-        g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-        g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
-        g_train = g_optim.apply_gradients(g_grads_and_vars)
-        even = tf.equal(tf.mod(global_step, 2), 0)
-        gen_train = tf.cond(even, lambda: gd_train, lambda: g_train)
+        #with tf.control_dependencies([discrim_train]):
+        gd_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        gd_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        gd_grads_and_vars = gd_optim.compute_gradients(gen_loss, var_list=gd_tvars)
+        gd_train = gd_optim.apply_gradients(gd_grads_and_vars)
+        
+        #g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        #g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        #g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
+        #g_train = g_optim.apply_gradients(g_grads_and_vars)
+        #even = tf.equal(tf.mod(global_step, 2), 0)
+        #gen_train = tf.cond(even, lambda: gd_train, lambda: g_train)
             
 
             
-    ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
+    #ema = tf.train.ExponentialMovingAverage(decay=0.99)
+    #update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
     incr_global_step = tf.assign(global_step, global_step+1)
 
             
     return Model(
         predict_real=predict_real,
         predict_fake=predict_fake,
-        discrim_loss=ema.average(discrim_loss),
+        discrim_loss=discrim_loss,
         discrim_grads_and_vars=discrim_grads_and_vars,
-        gen_loss_GAN=ema.average(gen_loss_GAN),
-        gen_loss_L1=ema.average(gen_loss_L1),
+        gen_loss_GAN=gen_loss_GAN,
+        gen_loss_L1=gen_loss_L1,
         gen_loss=gen_loss,
         gen_grads_and_vars=gd_grads_and_vars,
         outputs=outputs,
-        train=tf.group(update_losses, incr_global_step, gen_train),
+        train=tf.group(incr_global_step, discrim_train),
     )
 
 def training(loss):

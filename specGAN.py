@@ -17,7 +17,7 @@ from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
 EPS = 1e-12
-Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_loss, gen_grads_and_vars, train")
+Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_loss, gen_grads_and_vars, g_train, d_train, step")
 
 data_base_dir = os.getcwd()
 parser = argparse.ArgumentParser()
@@ -203,24 +203,22 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-        print("Discrim_tvars length: ", len(discrim_tvars))
-        print([i.name for i in discrim_tvars])
+        # print("Discrim_tvars length: ", len(discrim_tvars))
+        # print([i.name for i in discrim_tvars])
         discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
-        with tf.control_dependencies([discrim_train]):
-            gd_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gd_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-            gd_grads_and_vars = gd_optim.compute_gradients(gen_loss, var_list=gd_tvars)
-            gd_train = gd_optim.apply_gradients(gd_grads_and_vars)
+        #with tf.control_dependencies([discrim_train]):
         g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
         g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
+#        g_grads_and_vars = [(tf.clip_by_norm(grad, clip_norm=a.max_global_norm),var) for grad, var in g_grads_and_vars]
+        #g_vars = [var for grad, var in g_grads_and_vars]        
+        #g_grads = tf.clip_by_global_norm(g_grads, clip_norm=a.max_global_norm)
+        #g_grads_and_vars = zip(g_grads, g_vars)
         g_train = g_optim.apply_gradients(g_grads_and_vars)
-        even = tf.equal(tf.mod(global_step, 2), 0)
-        gen_train = tf.cond(even, lambda: gd_train, lambda: g_train)
             
 
             
@@ -237,9 +235,11 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
         gen_loss_GAN=ema.average(gen_loss_GAN),
         gen_loss_L1=ema.average(gen_loss_L1),
         gen_loss=gen_loss,
-        gen_grads_and_vars=gd_grads_and_vars,
+        gen_grads_and_vars=g_grads_and_vars,
         outputs=outputs,
-        train=tf.group(update_losses, incr_global_step, gen_train),
+        g_train=tf.group(update_losses, g_train),
+        d_train=tf.group(update_losses, discrim_train),
+        step=incr_global_step
     )
 
 def training(loss):
@@ -394,8 +394,10 @@ def run_training():
     with tf.Graph().as_default():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         fetches = {}
+        model = None
         if a.objective == "mse":
-            predictions = create_generator(noisy_pl, keep_prob, is_training)
+            model = create_generator(noisy_pl, keep_prob, is_training)
+            predictions = model
             fetches['loss'] = loss(predictions, clean_pl)
             fetches['train'] = training(fetches['loss'])
             # loss_val = fetches['loss']
@@ -406,9 +408,11 @@ def run_training():
             fetches['GAN_loss'] = model.gen_loss_GAN
             fetches['discrim_loss'] = model.discrim_loss
             fetches['loss'] = model.gen_loss
-            fetches['train'] = model.train
+            #fetches['train'] = model.train
             fetches['predict_real'] = model.predict_real
             fetches['predict_fake'] = model.predict_fake
+            #fetches['g_grad'] = model.gen_grads_and_vars
+            #fetches['d_grad'] = model.discrim_grads_and_vars
             # loss_val = fetches['loss']
             # tf.summary.scalar('loss', loss_val)
         summary = tf.summary.merge_all()
@@ -428,12 +432,19 @@ def run_training():
             if feed_dict[noisy_pl].shape[0]<a.batch_size:
                 config = init_config()
             
-            result = sess.run(fetches, feed_dict=feed_dict)
             if a.objective == "adv":
+                result = sess.run(model.d_train, feed_dict=feed_dict)
+                result = sess.run(model.d_train, feed_dict=feed_dict)
+                result = sess.run(model.d_train, feed_dict=feed_dict)
+                fetches['train'] = model.g_train
+                fetches['inc'] = model.step
+                result = sess.run(fetches, feed_dict=feed_dict)
                 print ('L1: %.2f  GAN: %.6f  Discrim: %.6f'
                        % (result['L1_loss'], result['GAN_loss'], result['discrim_loss']))
-                print ('predict_real: ', result['predict_real'])
-                print ('predict_fake: ', result['predict_fake'])
+                #print ('g_grad: ', result['g_grad'])
+                #print ('d_grad: ', result['d_grad'])
+            elif a.objective == "mse":
+                result = sess.run(fetches, feed_dict=feed_dict)
             loss_value = result['loss']
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
             totframes += feed_dict[noisy_pl].shape[0]

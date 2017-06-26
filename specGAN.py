@@ -34,7 +34,7 @@ parser.add_argument("--gan_weight", type=float, default=1.0, help = "weight of G
 parser.add_argument("--l1_weight", type=float, default=0.01, help = "weight of L1 loss in generator training")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
-parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv"])
+parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv", "l1"])
 parser.add_argument("--discrim_cond", type=str, default="full", choices=["full", "central"], help = "determines the form of the conditioning input to the discriminator; \"full\" uses full context window, and \"central\" uses only the central frame")
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
@@ -61,9 +61,13 @@ def read_mats(uid, offset, file_name):
     ark_dict,uid = read_kaldi_ark_from_scp(uid, offset, a.batch_size, a.buffer_size, scp_fn, data_base_dir)
     return ark_dict,uid
 
-def loss(predictions, labels):
+def mse_loss(predictions, labels):
   mse = tf.reduce_mean(tf.squared_difference(predictions, labels))
   return mse
+
+def l1_loss(predictions, labels):
+  loss = tf.reduce_mean(tf.abs(labels - predictions))
+  return loss
 
 def lrelu(x, a):
     with tf.name_scope("lrelu"):
@@ -380,7 +384,7 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
                 tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
                 tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
-            elif a.objective == "mse":
+            elif a.objective == "mse" or a.objective == "l1":
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
             totframes += feed_dict[noisy_pl].shape[0]
@@ -390,7 +394,7 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
             result = sess.run(gen_fetches, feed_dict=feed_dict)
             tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
             tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
-        elif a.objective == "mse":
+        elif a.objective == "mse" or a.objective == "l1":
             result = sess.run(gen_fetches, feed_dict=feed_dict)
         tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
         totframes += feed_dict[noisy_pl].shape[0]
@@ -402,7 +406,7 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     duration = time.time() - start_time
     if (a.objective == "adv"):
         print ('loss = %.2f L1_loss = %.2f GAN_loss = %.2f (%.3f sec)' % (eval_correct, eval_l1_loss, eval_gan_loss, duration))
-    elif (a.objective == "mse"):
+    elif a.objective == "mse" or a.objective == "l1":
         print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
     return eval_correct, duration
 
@@ -425,10 +429,13 @@ def run_training():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         disc_fetches = {}
         gen_fetches = {}
-        if a.objective == "mse":
+        if a.objective == "mse" or a.objective == "l1":
             with tf.variable_scope('generator'):
                 predictions = create_generator(noisy_pl, keep_prob, is_training)
-            gen_fetches['loss'] = loss(predictions, clean_pl)
+            if a.objective == "mse" :
+                gen_fetches['loss'] = mse_loss(predictions, clean_pl)
+            elif a.objective == "l1":
+                gen_fetches['loss'] = l1_loss(predictions, clean_pl)
             gen_fetches['train'] = training(gen_fetches['loss'])
             # loss_val = fetches['loss']
             # train_op = training(loss_val)
@@ -473,7 +480,7 @@ def run_training():
                 result = sess.run(disc_fetches, feed_dict=feed_dict)
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
-            elif a.objective == "mse":
+            elif a.objective == "mse" or a.objective == "l1":
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
  
             #result = sess.run(fetches, feed_dict=feed_dict)

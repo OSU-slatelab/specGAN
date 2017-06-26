@@ -16,8 +16,7 @@ import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
-EPS = 1e-12
-Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_loss, gen_grads_and_vars, g_train, d_train, step")
+Model = collections.namedtuple("Model", "outputs, discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss, discrim_train, gd_train,misc")
 
 data_base_dir = os.getcwd()
 parser = argparse.ArgumentParser()
@@ -27,12 +26,12 @@ parser.add_argument("--clean_train_file", default="data-spectrogram/train_si84_c
 parser.add_argument("--clean_dev_file", default="data-spectrogram/dev_dt_05_clean/feats.scp", help="The feature file for clean cross-validation labels")
 parser.add_argument("--buffer_size", default=10, type=int)
 parser.add_argument("--batch_size", default=1024, type=int)
-parser.add_argument("--checkpoint", default=None, help="directory with checkpoint to resume training from or use for testing")
+parser.add_argument("--exp_name", default=None, help="directory with checkpoint to resume training from or use for testing")
 #Training
-parser.add_argument("--lr", type=float, default = 0.08, help = "initial learning rate")
+parser.add_argument("--lr", type=float, default = 0.0002, help = "initial learning rate")
 parser.add_argument("--lr_decay", type=float, default=0.96, help = "learning rate decay")
 parser.add_argument("--gan_weight", type=float, default=1.0, help = "weight of GAN loss in generator training")
-parser.add_argument("--l1_weight", type=float, default=100.0, help = "weight of L1 loss in generator training")
+parser.add_argument("--l1_weight", type=float, default=0.01, help = "weight of L1 loss in generator training")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
 parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv"])
@@ -52,7 +51,6 @@ parser.add_argument("--keep_prob", type=float, default=0.4, help="keep percentag
 parser.add_argument("--patience", type=int, default=5312*10, help="patience interval to keep track of improvements")
 parser.add_argument("--patience_increase", type=int, default=2, help="increase patience interval on improvement")
 parser.add_argument("--improvement_threshold", type=float, default=0.995, help="keep track of validation error improvement")
-
 a = parser.parse_args()
 
 
@@ -209,55 +207,49 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
         d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_real, labels=tf.ones_like(predict_real)))
         d_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_fake, labels=tf.zeros_like(predict_fake)))
         discrim_loss = d_loss_real + d_loss_fake
-        #discrim_loss = tf.reduce_mean(-(tf.log(predict_real + EPS) + tf.log(1 - predict_fake + EPS)))
 
     with tf.name_scope('generator_loss'):
-        gen_loss_GAN = tf.reduce_mean(-tf.log(predict_fake + EPS))
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs))
+        gen_loss_GAN = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_fake, labels=tf.ones_like(predict_fake))) 
+        gen_loss_L1  = tf.reduce_mean(tf.abs(targets - outputs))
         gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-
-        # print("Discrim_tvars length: ", len(discrim_tvars))
-        # print([i.name for i in discrim_tvars])
-
+        #print("Discrim_tvars length: ", len(discrim_tvars))
+        #print([i.name for i in discrim_tvars])
         discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
-        #with tf.control_dependencies([discrim_train]):
-
-        g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-        g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
-#        g_grads_and_vars = [(tf.clip_by_norm(grad, clip_norm=a.max_global_norm),var) for grad, var in g_grads_and_vars]
-        #g_vars = [var for grad, var in g_grads_and_vars]        
-        #g_grads = tf.clip_by_global_norm(g_grads, clip_norm=a.max_global_norm)
-        #g_grads_and_vars = zip(g_grads, g_vars)
-        g_train = g_optim.apply_gradients(g_grads_and_vars)
+        gd_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        gd_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        gd_grads_and_vars = gd_optim.compute_gradients(gen_loss, var_list=gd_tvars)
+        gd_train = gd_optim.apply_gradients(gd_grads_and_vars)
+        
+        #g_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        #g_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        #g_grads_and_vars = g_optim.compute_gradients(gen_loss, var_list=g_tvars)
+        #g_train = g_optim.apply_gradients(g_grads_and_vars)
+        #even = tf.equal(tf.mod(global_step, 2), 0)
+        #gen_train = tf.cond(even, lambda: gd_train, lambda: g_train)
             
 
             
     #ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    #update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
+    #update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss])
     incr_global_step = tf.assign(global_step, global_step+1)
 
             
     return Model(
-        predict_real=predict_real,
-        predict_fake=predict_fake,
-        discrim_loss=discrim_loss,
-        discrim_grads_and_vars=discrim_grads_and_vars,
-        gen_loss_GAN=gen_loss_GAN,
-        gen_loss_L1=gen_loss_L1,
-        gen_loss=gen_loss,
-        gen_grads_and_vars=g_grads_and_vars,
+        discrim_loss=(discrim_loss),
+        gen_loss_GAN=(gen_loss_GAN),
+        gen_loss_L1=(gen_loss_L1),
+        gen_loss=(gen_loss),
         outputs=outputs,
-        g_train=tf.group(update_losses, g_train),
-        d_train=tf.group(update_losses, discrim_train),
-        step=incr_global_step
+        discrim_train=discrim_train,
+        gd_train=gd_train,
+        misc=tf.group(incr_global_step),
     )
 
 def training(loss):
@@ -269,7 +261,7 @@ def training(loss):
     #learning_rate = tf.train.exponential_decay(
     #        a.lr, global_step, a.num_steps_per_decay,
     #        a.decay_rate, staircase=True)
-    tf.summary.scalar('loss', loss)
+    #tf.summary.scalar('loss', loss)
     optimizer = tf.train.AdamOptimizer(a.lr,a.beta1)
     train_op = optimizer.apply_gradients(grad_var_pairs, global_step=global_step)
     return train_op
@@ -347,7 +339,6 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
 
 
     start = batch_index*a.batch_size
-    #D: i think end should point to frame_buffer_clean.shape[0] which is the non-padded array(check)
     end = min((batch_index+1)*a.batch_size,frame_buffer_clean.shape[0])
     config = {'batch_index':(batch_index+1)%a.buffer_size, 
                 'uid':uid_new,
@@ -366,15 +357,17 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     
     
 def placeholder_inputs():
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,a.input_featdim*(2*a.context+1)))
-    clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim))
-    keep_prob = tf.placeholder(tf.float32)
-    is_training = tf.placeholder(tf.bool)
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,a.input_featdim*(2*a.context+1)), name="noisy_placeholder")
+    clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim), name="clean_placeholder")
+    keep_prob = tf.placeholder(tf.float32, name="keep_prob")
+    is_training = tf.placeholder(tf.bool, name="is_training")
     return noisy_placeholder, clean_placeholder, keep_prob, is_training
 
-def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
+def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     config = init_config()
     tot_loss_epoch = 0
+    tot_l1_loss_epoch = 0
+    tot_gan_loss_epoch = 0
     totframes = 0
 
     start_time = time.time()
@@ -383,27 +376,46 @@ def do_eval(sess, loss_val, noisy_pl, clean_pl, is_training, keep_prob):
         feed_dict[is_training] = True # trying batch normalization
         feed_dict[keep_prob] = a.keep_prob # doing test-time dropout
         if feed_dict[noisy_pl].shape[0]<a.batch_size:
-            loss_value = sess.run(loss_val, feed_dict=feed_dict)
-            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+            if a.objective == "adv":
+                result = sess.run(gen_fetches, feed_dict=feed_dict)
+                tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
+                tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
+            elif a.objective == "mse":
+                result = sess.run(gen_fetches, feed_dict=feed_dict)
+            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
             totframes += feed_dict[noisy_pl].shape[0]
             break
-
-        loss_value = sess.run(loss_val, feed_dict=feed_dict)
-        tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+    
+        if a.objective == "adv":
+            result = sess.run(gen_fetches, feed_dict=feed_dict)
+            tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
+            tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
+        elif a.objective == "mse":
+            result = sess.run(gen_fetches, feed_dict=feed_dict)
+        tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
         totframes += feed_dict[noisy_pl].shape[0]
 
-    eval_correct = float(tot_loss_epoch)/totframes
+    if (a.objective == "adv"):
+        eval_l1_loss = float(tot_l1_loss_epoch)/totframes
+        eval_gan_loss = float(tot_gan_loss_epoch)/totframes
+    eval_correct = float(tot_loss_epoch)/totframes 
     duration = time.time() - start_time
-    print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
+    if (a.objective == "adv"):
+        print ('loss = %.2f L1_loss = %.2f GAN_loss = %.2f (%.3f sec)' % (eval_correct, eval_l1_loss, eval_gan_loss, duration))
+    elif (a.objective == "mse"):
+        print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
     return eval_correct, duration
 
 
 
 def run_training():
     config = init_config() 
-    if not os.path.isdir("model"):
-        os.makedirs("model")
+    if not os.path.isdir(a.exp_name):
+        os.makedirs(a.exp_name)
     tot_loss_epoch = 0
+    tot_l1_loss_epoch = 0
+    tot_gan_loss_epoch = 0
+    tot_discrim_loss_epoch = 0
     avg_loss_epoch = 0
     totframes = 0
     best_validation_loss = np.inf
@@ -411,31 +423,39 @@ def run_training():
 
     with tf.Graph().as_default():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
-        fetches = {}
-        model = None
+        disc_fetches = {}
+        gen_fetches = {}
         if a.objective == "mse":
-            model = create_generator(noisy_pl, keep_prob, is_training)
-            predictions = model
-            fetches['loss'] = loss(predictions, clean_pl)
-            fetches['train'] = training(fetches['loss'])
+            with tf.variable_scope('generator'):
+                predictions = create_generator(noisy_pl, keep_prob, is_training)
+            gen_fetches['loss'] = loss(predictions, clean_pl)
+            gen_fetches['train'] = training(gen_fetches['loss'])
             # loss_val = fetches['loss']
             # train_op = training(loss_val)
         elif a.objective == "adv":
             model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
-            fetches['L1_loss'] = model.gen_loss_L1
-            fetches['GAN_loss'] = model.gen_loss_GAN
-            fetches['discrim_loss'] = model.discrim_loss
-            fetches['loss'] = model.gen_loss
-            #fetches['train'] = model.train
-            fetches['predict_real'] = model.predict_real
-            fetches['predict_fake'] = model.predict_fake
-            #fetches['g_grad'] = model.gen_grads_and_vars
-            #fetches['d_grad'] = model.discrim_grads_and_vars
+            disc_fetches['L1_loss'] = model.gen_loss_L1
+            disc_fetches['GAN_loss'] = model.gen_loss_GAN
+            disc_fetches['discrim_loss'] = model.discrim_loss
+            disc_fetches['loss'] = model.gen_loss
+            disc_fetches['discrim_train'] = model.discrim_train
+            disc_fetches['misc'] = model.misc
+
+            gen_fetches['L1_loss'] = model.gen_loss_L1
+            gen_fetches['GAN_loss'] = model.gen_loss_GAN
+            gen_fetches['discrim_loss'] = model.discrim_loss
+            gen_fetches['loss'] = model.gen_loss
+            gen_fetches['generator_train'] = model.gd_train
+            gen_fetches['misc'] = model.misc
+
+            #fetches['predict_real'] = model.predict_real
+            #fetches['predict_fake'] = model.predict_fake
             # loss_val = fetches['loss']
             # tf.summary.scalar('loss', loss_val)
-        summary = tf.summary.merge_all()
+        #summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
-        saver = tf.train.Saver()
+        t_vars = tf.trainable_variables()
+        saver = tf.train.Saver([var for var in t_vars if 'generator' in var.name])
         sess = tf.Session()
         #summary_writer = tf.summary.FileWriter("log", sess.graph)
 
@@ -449,40 +469,51 @@ def run_training():
 
             if feed_dict[noisy_pl].shape[0]<a.batch_size:
                 config = init_config()
-            
-            if a.objective == "adv":
-                result = sess.run(model.d_train, feed_dict=feed_dict)
-                result = sess.run(model.d_train, feed_dict=feed_dict)
-                result = sess.run(model.d_train, feed_dict=feed_dict)
-                fetches['train'] = model.g_train
-                fetches['inc'] = model.step
-                result = sess.run(fetches, feed_dict=feed_dict)
-                print ('L1: %.2f  GAN: %.6f  Discrim: %.6f'
-                       % (result['L1_loss'], result['GAN_loss'], result['discrim_loss']))
-                #print ('g_grad: ', result['g_grad'])
-                #print ('d_grad: ', result['d_grad'])
+            if a.objective == "adv": 
+                result = sess.run(disc_fetches, feed_dict=feed_dict)
+                result = sess.run(gen_fetches, feed_dict=feed_dict)
+                result = sess.run(gen_fetches, feed_dict=feed_dict)
             elif a.objective == "mse":
-                result = sess.run(fetches, feed_dict=feed_dict)
-            loss_value = result['loss']
-            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*loss_value
+                result = sess.run(gen_fetches, feed_dict=feed_dict)
+ 
+            #result = sess.run(fetches, feed_dict=feed_dict)
+            #if a.objective == "adv":
+            #    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
+            #           % (result['L1_loss'], result['GAN_loss'], result['discrim_loss'], result['loss']))
+            #    #print ('predict_real: ', result['predict_real'])
+            #    #print ('predict_fake: ', result['predict_fake'])
+            
+            tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result['loss']
+            if (a.objective == "adv"): 
+                tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result['L1_loss']
+                tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result['GAN_loss']
+                tot_discrim_loss_epoch += feed_dict[noisy_pl].shape[0]*result['discrim_loss']
+
             totframes += feed_dict[noisy_pl].shape[0]
 
             if (step+1)%5312 == 0:
                 avg_loss_epoch = float(tot_loss_epoch)/totframes
+                if (a.objective == "adv"):
+                    avg_l1_loss_epoch = float(tot_l1_loss_epoch)/totframes
+                    avg_gan_loss_epoch = float(tot_gan_loss_epoch)/totframes
+                    avg_discrim_loss_epoch = float(tot_discrim_loss_epoch)/totframes
                 tot_loss_epoch = 0   
+                tot_l1_loss_epoch = 0
+                tot_gan_loss_epoch = 0
+                tot_discrim_loss_epoch = 0
                 duration = time.time() - start_time
                 start_time = time.time()
                 print ('Step %d: loss = %.6f (%.3f sec)' % (step, avg_loss_epoch, duration))
                 if a.objective == "adv":
-                    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f'
-                           % (result['L1_loss'], result['GAN_loss'], result['discrim_loss']))
-                    print ('predict_real: ', result['predict_real'])
-                    print ('predict_fake: ', result['predict_fake'])
+                    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
+                           % (avg_l1_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
+                    #print ('predict_real: ', result['predict_real'])
+                    #print ('predict_fake: ', result['predict_fake'])
                 #summary_str = sess.run(summary, feed_dict=feed_dict)
                 #summary_writer.add_summary(summary_str, step)
                 #summary_writer.flush()
                 print ('Eval step:')
-                eval_loss, duration = do_eval(sess, fetches['loss'], noisy_pl,
+                eval_loss, duration = do_eval(sess, gen_fetches, noisy_pl,
                                               clean_pl, is_training, keep_prob)
                 
                 if eval_loss<best_validation_loss:
@@ -490,7 +521,7 @@ def run_training():
                         patience = max(patience, (step+1)* a.patience_increase)
                     best_validation_loss = eval_loss
                     best_iter = step
-                    save_path = saver.save(sess, "model/model.ckpt", global_step=step)
+                    save_path = saver.save(sess, os.path.join(a.exp_name,"model.ckpt"), global_step=step)
             if patience<=step:
                 break
             step = step + 1

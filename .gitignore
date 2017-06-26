@@ -3,6 +3,7 @@ data-spectrogram/
 *.ark
 *.scp
 log/
+model/
 
 # emacs autosaves
 *~

@@ -18,8 +18,8 @@ from six.moves import xrange
 data_base_dir = os.getcwd()
 parser = argparse.ArgumentParser()
 parser.add_argument("--noisy_file", default="data-spectrogram/dev_dt_05_noisy/feats.scp", help="The input feature file for training")
-parser.add_argument("--meta_file", default="model/model.ckpt-5311.meta", help = "The meta file to load from")
-parser.add_argument("--checkpoint", default="model/model.ckpt-5311")
+parser.add_argument("--meta_file", default=None, help = "The meta file to load from")
+parser.add_argument("--checkpoint", default=None)
 parser.add_argument("--out_file", default="reconstructed_feats.ark", help = "The file to write the features to")
 parser.add_argument("--context", type=int, default=5)
 
@@ -83,8 +83,9 @@ def run_generate():
     keep_prob = graph.get_tensor_by_name("keep_prob:0")
     is_training = graph.get_tensor_by_name("is_training:0")
     
+    #[n.name for n in tf.get_default_graph().as_graph_def().node]
 
-    predictions = graph.get_tensor_by_name("linear/cond/Merge:0")
+    predictions = graph.get_tensor_by_name("generator/linear/cond/Merge:0")
 
     start_time = time.time()
     step = 0

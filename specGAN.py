@@ -48,6 +48,8 @@ parser.add_argument("--num_steps_per_decay", type=int, default=5312*10, help="nu
 parser.add_argument("--decay_rate", type=float, default=0.96, help="learning rate decay")
 parser.add_argument("--max_global_norm", type=float, default=5.0, help="global max norm for clipping")
 parser.add_argument("--keep_prob", type=float, default=0.4, help="keep percentage of neurons")
+parser.add_argument("--no_test_dropout", action='store_true', default=False, help="if enabled, DO NOT use dropout during test")
+parser.add_argument("--test_popnorm", action='store_true', default=False, help="if enabled, use population normalization instead of batch normalization at test")
 parser.add_argument("--patience", type=int, default=5312*10, help="patience interval to keep track of improvements")
 parser.add_argument("--patience_increase", type=int, default=2, help="increase patience interval on improvement")
 parser.add_argument("--improvement_threshold", type=float, default=0.995, help="keep track of validation error improvement")
@@ -377,8 +379,9 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     start_time = time.time()
     while(True):
         feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, a.noisy_dev_file, a.clean_dev_file, shuffle=False)
-        feed_dict[is_training] = True # trying batch normalization
-        feed_dict[keep_prob] = a.keep_prob # doing test-time dropout
+        
+        feed_dict[is_training] = False if a.test_popnorm else True
+        feed_dict[keep_prob] = 1.0 if a.no_test_dropout else a.keep_prob
         if feed_dict[noisy_pl].shape[0]<a.batch_size:
             if a.objective == "adv":
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
@@ -461,8 +464,8 @@ def run_training():
             # tf.summary.scalar('loss', loss_val)
         #summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
-        t_vars = tf.trainable_variables()
-        saver = tf.train.Saver([var for var in t_vars if 'generator' in var.name])
+        all_vars = tf.global_variables()
+        saver = tf.train.Saver([var for var in all_vars if 'generator' in var.name])
         sess = tf.Session()
         #summary_writer = tf.summary.FileWriter("log", sess.graph)
 

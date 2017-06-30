@@ -76,7 +76,6 @@ def run_generate():
     config = init_config() 
     sess = tf.Session()
     saved_model = tf.train.import_meta_graph(a.meta_file)
-    sess.run(tf.global_variables_initializer())
     saved_model.restore(sess,a.checkpoint)
 
     graph = tf.get_default_graph()
@@ -96,7 +95,6 @@ def run_generate():
             break
         feed_dict[keep_prob] = 0.5
         feed_dict[is_training] = True
-
         value = sess.run(predictions, feed_dict=feed_dict)
         kaldi_write_mats(a.out_file, bytes(id_noisy,'utf-8'), value)
     sess.close() 

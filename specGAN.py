@@ -523,8 +523,6 @@ def run_training():
                     print ('Objective: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
                            % (avg_objective_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
 
-                    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
-                           % (avg_l1_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
                     #print ('predict_real: ', result['predict_real'])
                     #print ('predict_fake: ', result['predict_fake'])
                 #summary_str = sess.run(summary, feed_dict=feed_dict)

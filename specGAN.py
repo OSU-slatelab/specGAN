@@ -449,9 +449,9 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     eval_correct = float(tot_loss_epoch)/totframes 
     duration = time.time() - start_time
     if (a.objective == "adv"):
-        print ('loss = %.2f Objective_loss = %.2f GAN_loss = %.2f (%.3f sec)' % (eval_correct, eval_objective_loss, eval_gan_loss, duration))
+        print ('loss = %.6f Objective_loss = %.6f GAN_loss = %.6f (%.3f sec)' % (eval_correct, eval_objective_loss, eval_gan_loss, duration))
     elif a.objective == "mse" or a.objective == "l1":
-        print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
+        print ('loss = %.6f (%.3f sec)' % (eval_correct, duration))
     return eval_correct, duration
 
 

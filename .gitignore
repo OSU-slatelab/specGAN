@@ -2,7 +2,7 @@
 data-spectrogram/
 *.ark
 *.scp
-log/
+log
 model/
 
 # emacs autosaves

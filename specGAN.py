@@ -51,6 +51,12 @@ parser.add_argument("--max_global_norm", type=float, default=5.0, help="global m
 parser.add_argument("--keep_prob", type=float, default=0.4, help="keep percentage of neurons")
 parser.add_argument("--no_test_dropout", action='store_true', default=False, help="if enabled, DO NOT use dropout during test")
 parser.add_argument("--test_popnorm", action='store_true', default=False, help="if enabled, use population normalization instead of batch normalization at test")
+#Generator Noise options 
+parser.add_argument("--add_noise", action='store_true', default=False, help="if enabled, adds noise to the generator input")
+parser.add_argument("--noise_dim", type=int, default=256, help="dimension of noise added")
+parser.add_argument("--noise_mean", type=float, default=0, help="mean of the gaussian noise distribution")
+parser.add_argument("--noise_std", type=float, default=1.0, help="std deviation of the gaussian noise distribution")
+
 parser.add_argument("--patience", type=int, default=5312*10, help="patience interval to keep track of improvements")
 parser.add_argument("--patience_increase", type=int, default=2, help="increase patience interval on improvement")
 parser.add_argument("--improvement_threshold", type=float, default=0.995, help="keep track of validation error improvement")
@@ -117,7 +123,10 @@ def batch_norm(x, shape, training):
 def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        shape = [a.input_featdim*(2*a.context+1), a.gen_units]
+        if a.add_noise:
+            shape = [(a.input_featdim*(2*a.context+1))+a.noise_dim, a.gen_units]
+        else:
+            shape = [a.input_featdim*(2*a.context+1), a.gen_units]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
         bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(generator_inputs, weight) + bias
@@ -361,6 +370,10 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
                 'perm':A}
     noisy_batch = np.stack((frame_buffer_noisy[A[i]:A[i]+1+2*a.context,].flatten()
                             for i in range(start, end)), axis = 0)
+    if a.add_noise:
+        batch_z = np.random.normal(a.noise_mean, a.noise_std, [noisy_batch.shape[0], a.noise_dim]).astype(np.float32)
+        temp = np.concatenate((noisy_batch, batch_z), axis=1)
+        noisy_batch = temp
     feed_dict = {noisy_pl:noisy_batch, clean_pl:frame_buffer_clean[start:end]}
     return (feed_dict, config)
         
@@ -368,7 +381,11 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     
     
 def placeholder_inputs():
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,a.input_featdim*(2*a.context+1)), name="noisy_placeholder")
+    if a.add_noise:
+        shape = (a.input_featdim*(2*a.context+1))+a.noise_dim
+    else:
+        shape = a.input_featdim*(2*a.context+1)
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,shape), name="noisy_placeholder")
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim), name="clean_placeholder")
     keep_prob = tf.placeholder(tf.float32, name="keep_prob")
     is_training = tf.placeholder(tf.bool, name="is_training")
@@ -432,7 +449,6 @@ def run_training():
     totframes = 0
     best_validation_loss = np.inf
     patience = a.patience
-
     with tf.Graph().as_default():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         disc_fetches = {}

@@ -35,6 +35,8 @@ parser.add_argument("--l1_weight", type=float, default=0.01, help = "weight of L
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
 parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv", "l1"])
+parser.add_argument("--normalize_input", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "if no, do not normalize inputs; if sigmoid, normalize between [0,1], if tanh, normalize between [-1,1]")
+parser.add_argument("--normalize_target", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "if no, do not normalize inputs; if sigmoid, normalize between [0,1], if tanh, normalize between [-1,1]")
 parser.add_argument("--discrim_cond", type=str, default="full", choices=["full", "central"], help = "determines the form of the conditioning input to the discriminator; \"full\" uses full context window, and \"central\" uses only the central frame")
 parser.add_argument("--nlayers", type=int, default=2)
 parser.add_argument("--gen_units", type=int, default=2048)
@@ -54,7 +56,10 @@ parser.add_argument("--patience", type=int, default=5312*10, help="patience inte
 parser.add_argument("--patience_increase", type=int, default=2, help="increase patience interval on improvement")
 parser.add_argument("--improvement_threshold", type=float, default=0.995, help="keep track of validation error improvement")
 a = parser.parse_args()
-
+in_min = 0
+in_max = 0
+tgt_min = 0
+tgt_max = 0
 
 def read_mats(uid, offset, file_name):
     #Read a buffer containing buffer_size*batch_size+offset 
@@ -138,8 +143,12 @@ def create_generator(generator_inputs, keep_prob, is_training):
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
         bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(dropout2, weight) + bias
-        bn = batch_norm(linear, shape, is_training)
-    return bn
+        out = batch_norm(linear, shape, is_training)
+        if a.normalize_target == "sigmoid":
+            out = tf.sigmoid(out)
+        elif a.normalize_target == "tanh":
+            out = tf.tanh(out)
+    return out
 
 def fully_connected_batchnorm(inputs, shape, is_training):
     weights = tf.get_variable("weight",
@@ -324,6 +333,16 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     if batch_index==0:
         frame_buffer_noisy, frame_buffer_clean, uid_new, offset = create_buffer(config['uid'],
                                                                                 config['offset'])
+        if a.normalize_input == "sigmoid":
+            frame_buffer_noisy = np.interp(frame_buffer_noisy, [in_min, in_max], [0.0, 1.0])
+        elif a.normalize_input == "tanh":
+            frame_buffer_noisy = np.interp(frame_buffer_noisy, [in_min, in_max], [-1.0, 1.0])
+
+        if a.normalize_target == "sigmoid":
+            frame_buffer_clean = np.interp(frame_buffer_clean, [tgt_min, tgt_max], [0.0, 1.0])
+        elif a.normalize_target == "tanh":
+            frame_buffer_clean = np.interp(frame_buffer_clean, [tgt_min, tgt_max], [-1.0, 1.0])
+
         frame_buffer_noisy = np.pad(frame_buffer_noisy,
                                     ((a.context,),(0,)),
                                     'constant',
@@ -472,6 +491,13 @@ def run_training():
         sess.run(init)
         start_time = time.time()
         step = 0
+        if a.normalize_input != "no":
+            print("finding range of input values...")
+            in_min, in_max = find_min_max(a.noisy_train_file)
+        if a.normalize_target != "no":
+            print("finding range of target values...")            
+            tgt_min, tgt_max = find_min_max(a.clean_train_file)
+        
         while(True):
             feed_dict, config = fill_feed_dict(noisy_pl, clean_pl, config, a.noisy_train_file, a.clean_train_file, shuffle=True)
             feed_dict[keep_prob] = a.keep_prob
@@ -531,12 +557,28 @@ def run_training():
                         patience = max(patience, (step+1)* a.patience_increase)
                     best_validation_loss = eval_loss
                     best_iter = step
-                    save_path = saver.save(sess, os.path.join(a.exp_name,"model.ckpt"), global_step=step)
+                save_path = saver.save(sess, os.path.join(a.exp_name,"model.ckpt"), global_step=step)
             if patience<=step:
                 break
             step = step + 1
 
-
+def find_min_max(scp_file):
+    minimum = float("inf")
+    maximum = -float("inf")
+    uid = 0
+    offset = 0
+    ark_dict, uid = read_mats(uid, offset, scp_file)
+    while ark_dict:
+        for key in ark_dict.keys():
+            mat_max = np.amax(ark_dict[key])
+            mat_min = np.amin(ark_dict[key])
+            if mat_max > maximum:
+                maximum = mat_max
+            if mat_min < minimum:
+                minimum = mat_min
+        ark_dict, uid = read_mats(uid, offset, scp_file)
+    print("min:", minimum, "max:", maximum)
+    return minimum, maximum
 
 def main():
     run_training()

@@ -22,6 +22,13 @@ parser.add_argument("--meta_file", default=None, help = "The meta file to load f
 parser.add_argument("--checkpoint", default=None)
 parser.add_argument("--out_file", default="reconstructed_feats.ark", help = "The file to write the features to")
 parser.add_argument("--context", type=int, default=5)
+parser.add_argument("--normalize_input", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "Must match same parameter provided to train model being used to generate output")
+parser.add_argument("--normalize_target", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "Must match same parameter provided to train model being used to generate output")
+parser.add_argument("--in_min", type=float, default=1e-3, help="if --normalize_input != no, min of inputs determined by training (printed on stdout at runtime)")
+parser.add_argument("--in_max", type=float, default=1e-3, help="if --normalize_input != no, max of inputs determined by training (printed on stdout at runtime)")
+parser.add_argument("--out_min", type=float, default=1e-3, help="if --normalize_input != no, min of targets determined by training (printed on stdout at runtime)")
+parser.add_argument("--out_max", type=float, default=1e-3, help="if --normalize_input != no, min of targets determined by training (printed on stdout at runtime)")
+
 
 parser.add_argument("--buffer_size", default=1, type=int)
 parser.add_argument("--batch_size", default=1, type=int)
@@ -61,6 +68,10 @@ def fill_feed_dict(noisy_pl, config, noisy_file, shuffle):
                                     ((a.context,),(0,)),
                                     'constant',
                                     constant_values=0)
+    if a.normalize_input == "sigmoid":
+        frame_buffer_noisy = np.interp(frame_buffer_noisy, [a.in_min, a.in_max], [0.0, 1.0])
+    elif a.normalize_input == "tanh":
+        frame_buffer_noisy = np.interp(frame_buffer_noisy, [a.in_min, a.in_max], [-1.0, 1.0])
  
     config = {  'uid':uid_new,
                 'frame_buffer_noisy':frame_buffer_noisy,
@@ -97,6 +108,11 @@ def run_generate():
         feed_dict[is_training] = False
 
         value = sess.run(predictions, feed_dict=feed_dict)
+        if a.normalize_target == "sigmoid":
+            value = np.interp(frame_buffer_clean, [0.0, 1.0], [a.out_min, a.out_max])
+        elif a.normalize_target == "tanh":
+            value = np.interp(frame_buffer_clean, [-1.0, 1.0], [a.out_min, a.out_max])
+        
         kaldi_write_mats(a.out_file, bytes(id_noisy,'utf-8'), value)
     sess.close() 
     duration = time.time() - start_time

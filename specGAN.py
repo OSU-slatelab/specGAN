@@ -16,7 +16,7 @@ import time
 from data_io import read_kaldi_ark_from_scp
 from six.moves import xrange 
 
-Model = collections.namedtuple("Model", "outputs, discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss, discrim_train, gd_train,misc")
+Model = collections.namedtuple("Model", "outputs, discrim_loss, gen_loss_GAN, gen_loss_objective, gen_loss, discrim_train, gd_train,misc")
 
 data_base_dir = os.getcwd()
 parser = argparse.ArgumentParser()
@@ -31,9 +31,10 @@ parser.add_argument("--exp_name", default=None, help="directory with checkpoint 
 parser.add_argument("--lr", type=float, default = 0.0002, help = "initial learning rate")
 parser.add_argument("--lr_decay", type=float, default=0.96, help = "learning rate decay")
 parser.add_argument("--gan_weight", type=float, default=1.0, help = "weight of GAN loss in generator training")
-parser.add_argument("--l1_weight", type=float, default=0.01, help = "weight of L1 loss in generator training")
+parser.add_argument("--objective_weight", type=float, default=0.01, help = "weight of L1/MSE loss in generator training")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term")
 #Model
+parser.add_argument("--gen_objective", type=str, default="mse", choices=["mse","l1"])
 parser.add_argument("--objective", type=str, default="mse", choices=["mse", "adv", "l1"])
 parser.add_argument("--normalize_input", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "if no, do not normalize inputs; if sigmoid, normalize between [0,1], if tanh, normalize between [-1,1]")
 parser.add_argument("--normalize_target", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "if no, do not normalize inputs; if sigmoid, normalize between [0,1], if tanh, normalize between [-1,1]")
@@ -52,6 +53,12 @@ parser.add_argument("--max_global_norm", type=float, default=5.0, help="global m
 parser.add_argument("--keep_prob", type=float, default=0.4, help="keep percentage of neurons")
 parser.add_argument("--no_test_dropout", action='store_true', default=False, help="if enabled, DO NOT use dropout during test")
 parser.add_argument("--test_popnorm", action='store_true', default=False, help="if enabled, use population normalization instead of batch normalization at test")
+#Generator Noise options 
+parser.add_argument("--add_noise", action='store_true', default=False, help="if enabled, adds noise to the generator input")
+parser.add_argument("--noise_dim", type=int, default=256, help="dimension of noise added")
+parser.add_argument("--noise_mean", type=float, default=0, help="mean of the gaussian noise distribution")
+parser.add_argument("--noise_std", type=float, default=1.0, help="std deviation of the gaussian noise distribution")
+
 parser.add_argument("--patience", type=int, default=5312*10, help="patience interval to keep track of improvements")
 parser.add_argument("--patience_increase", type=int, default=2, help="increase patience interval on improvement")
 parser.add_argument("--improvement_threshold", type=float, default=0.995, help="keep track of validation error improvement")
@@ -121,7 +128,10 @@ def batch_norm(x, shape, training):
 def create_generator(generator_inputs, keep_prob, is_training):
     # Hidden 1
     with tf.variable_scope('hidden1'):
-        shape = [a.input_featdim*(2*a.context+1), a.gen_units]
+        if a.add_noise:
+            shape = [(a.input_featdim*(2*a.context+1))+a.noise_dim, a.gen_units]
+        else:
+            shape = [a.input_featdim*(2*a.context+1), a.gen_units]
         weight = tf.get_variable("weight", shape, dtype=tf.float32, initializer = tf.random_normal_initializer(0,0.02))
         bias = tf.get_variable("bias", shape[-1], initializer=tf.constant_initializer(0.0))
         linear = tf.matmul(generator_inputs, weight) + bias
@@ -225,8 +235,12 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
 
     with tf.name_scope('generator_loss'):
         gen_loss_GAN = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=predict_fake, labels=tf.ones_like(predict_fake))) 
-        gen_loss_L1  = tf.reduce_mean(tf.abs(targets - outputs))
-        gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_L1 * a.l1_weight
+        if (a.gen_objective == "l1"):
+            gen_loss_objective  = tf.reduce_mean(tf.abs(targets - outputs))
+        elif (a.gen_objective == "mse"):
+            gen_loss_objective = tf.reduce_mean(tf.squared_difference(outputs, targets))
+            
+        gen_loss = gen_loss_GAN * a.gan_weight + gen_loss_objective * a.objective_weight
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
@@ -259,7 +273,7 @@ def create_adversarial_model(inputs, targets, keep_prob, is_training):
     return Model(
         discrim_loss=(discrim_loss),
         gen_loss_GAN=(gen_loss_GAN),
-        gen_loss_L1=(gen_loss_L1),
+        gen_loss_objective=(gen_loss_objective),
         gen_loss=(gen_loss),
         outputs=outputs,
         discrim_train=discrim_train,
@@ -375,6 +389,10 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
                 'perm':A}
     noisy_batch = np.stack((frame_buffer_noisy[A[i]:A[i]+1+2*a.context,].flatten()
                             for i in range(start, end)), axis = 0)
+    if a.add_noise:
+        batch_z = np.random.normal(a.noise_mean, a.noise_std, [noisy_batch.shape[0], a.noise_dim]).astype(np.float32)
+        temp = np.concatenate((noisy_batch, batch_z), axis=1)
+        noisy_batch = temp
     feed_dict = {noisy_pl:noisy_batch, clean_pl:frame_buffer_clean[start:end]}
     return (feed_dict, config)
         
@@ -382,7 +400,11 @@ def fill_feed_dict(noisy_pl, clean_pl, config, noisy_file, clean_file, shuffle):
     
     
 def placeholder_inputs():
-    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,a.input_featdim*(2*a.context+1)), name="noisy_placeholder")
+    if a.add_noise:
+        shape = (a.input_featdim*(2*a.context+1))+a.noise_dim
+    else:
+        shape = a.input_featdim*(2*a.context+1)
+    noisy_placeholder = tf.placeholder(tf.float32, shape=(None,shape), name="noisy_placeholder")
     clean_placeholder = tf.placeholder(tf.float32, shape=(None,a.output_featdim), name="clean_placeholder")
     keep_prob = tf.placeholder(tf.float32, name="keep_prob")
     is_training = tf.placeholder(tf.bool, name="is_training")
@@ -391,7 +413,7 @@ def placeholder_inputs():
 def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     config = init_config()
     tot_loss_epoch = 0
-    tot_l1_loss_epoch = 0
+    tot_objective_loss_epoch = 0
     tot_gan_loss_epoch = 0
     totframes = 0
 
@@ -404,7 +426,7 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
         if feed_dict[noisy_pl].shape[0]<a.batch_size:
             if a.objective == "adv":
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
-                tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
+                tot_objective_loss_epoch += feed_dict[noisy_pl].shape[0]*result["objective_loss"]
                 tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
             elif a.objective == "mse" or a.objective == "l1":
                 result = sess.run(gen_fetches, feed_dict=feed_dict)
@@ -414,7 +436,7 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     
         if a.objective == "adv":
             result = sess.run(gen_fetches, feed_dict=feed_dict)
-            tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result["L1_loss"]
+            tot_objective_loss_epoch += feed_dict[noisy_pl].shape[0]*result["objective_loss"]
             tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
         elif a.objective == "mse" or a.objective == "l1":
             result = sess.run(gen_fetches, feed_dict=feed_dict)
@@ -422,12 +444,12 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
         totframes += feed_dict[noisy_pl].shape[0]
 
     if (a.objective == "adv"):
-        eval_l1_loss = float(tot_l1_loss_epoch)/totframes
+        eval_objective_loss = float(tot_objective_loss_epoch)/totframes
         eval_gan_loss = float(tot_gan_loss_epoch)/totframes
     eval_correct = float(tot_loss_epoch)/totframes 
     duration = time.time() - start_time
     if (a.objective == "adv"):
-        print ('loss = %.2f L1_loss = %.2f GAN_loss = %.2f (%.3f sec)' % (eval_correct, eval_l1_loss, eval_gan_loss, duration))
+        print ('loss = %.2f Objective_loss = %.2f GAN_loss = %.2f (%.3f sec)' % (eval_correct, eval_objective_loss, eval_gan_loss, duration))
     elif a.objective == "mse" or a.objective == "l1":
         print ('loss = %.2f (%.3f sec)' % (eval_correct, duration))
     return eval_correct, duration
@@ -439,14 +461,13 @@ def run_training():
     if not os.path.isdir(a.exp_name):
         os.makedirs(a.exp_name)
     tot_loss_epoch = 0
-    tot_l1_loss_epoch = 0
+    tot_objective_loss_epoch = 0
     tot_gan_loss_epoch = 0
     tot_discrim_loss_epoch = 0
     avg_loss_epoch = 0
     totframes = 0
     best_validation_loss = np.inf
     patience = a.patience
-
     with tf.Graph().as_default():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         disc_fetches = {}
@@ -463,14 +484,14 @@ def run_training():
             # train_op = training(loss_val)
         elif a.objective == "adv":
             model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
-            disc_fetches['L1_loss'] = model.gen_loss_L1
+            disc_fetches['objective_loss'] = model.gen_loss_objective
             disc_fetches['GAN_loss'] = model.gen_loss_GAN
             disc_fetches['discrim_loss'] = model.discrim_loss
             disc_fetches['loss'] = model.gen_loss
             disc_fetches['discrim_train'] = model.discrim_train
             disc_fetches['misc'] = model.misc
 
-            gen_fetches['L1_loss'] = model.gen_loss_L1
+            gen_fetches['objective_loss'] = model.gen_loss_objective
             gen_fetches['GAN_loss'] = model.gen_loss_GAN
             gen_fetches['discrim_loss'] = model.discrim_loss
             gen_fetches['loss'] = model.gen_loss
@@ -521,7 +542,7 @@ def run_training():
             
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result['loss']
             if (a.objective == "adv"): 
-                tot_l1_loss_epoch += feed_dict[noisy_pl].shape[0]*result['L1_loss']
+                tot_objective_loss_epoch += feed_dict[noisy_pl].shape[0]*result['objective_loss']
                 tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result['GAN_loss']
                 tot_discrim_loss_epoch += feed_dict[noisy_pl].shape[0]*result['discrim_loss']
 
@@ -530,19 +551,20 @@ def run_training():
             if (step+1)%5312 == 0:
                 avg_loss_epoch = float(tot_loss_epoch)/totframes
                 if (a.objective == "adv"):
-                    avg_l1_loss_epoch = float(tot_l1_loss_epoch)/totframes
+                    avg_objective_loss_epoch = float(tot_objective_loss_epoch)/totframes
                     avg_gan_loss_epoch = float(tot_gan_loss_epoch)/totframes
                     avg_discrim_loss_epoch = float(tot_discrim_loss_epoch)/totframes
                 tot_loss_epoch = 0   
-                tot_l1_loss_epoch = 0
+                tot_objective_loss_epoch = 0
                 tot_gan_loss_epoch = 0
                 tot_discrim_loss_epoch = 0
                 duration = time.time() - start_time
                 start_time = time.time()
                 print ('Step %d: loss = %.6f (%.3f sec)' % (step, avg_loss_epoch, duration))
                 if a.objective == "adv":
-                    print ('L1: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
-                           % (avg_l1_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
+                    print ('Objective: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
+                           % (avg_objective_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
+
                     #print ('predict_real: ', result['predict_real'])
                     #print ('predict_fake: ', result['predict_fake'])
                 #summary_str = sess.run(summary, feed_dict=feed_dict)

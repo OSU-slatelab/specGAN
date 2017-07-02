@@ -21,15 +21,16 @@ parser.add_argument("--noisy_file", default="data-spectrogram/dev_dt_05_noisy/fe
 parser.add_argument("--meta_file", default=None, help = "The meta file to load from")
 parser.add_argument("--checkpoint", default=None)
 parser.add_argument("--out_file", default="reconstructed_feats.ark", help = "The file to write the features to")
-parser.add_argument("--context", type=int, default=5)
+parser.add_argument("--context", type=int, default=3)
 parser.add_argument("--normalize_input", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "Must match same parameter provided to train model being used to generate output")
 parser.add_argument("--normalize_target", type=str, default="no", choices=["no", "sigmoid", "tanh"], help = "Must match same parameter provided to train model being used to generate output")
 parser.add_argument("--in_min", type=float, default=1e-3, help="if --normalize_input != no, min of inputs determined by training (printed on stdout at runtime)")
 parser.add_argument("--in_max", type=float, default=1e-3, help="if --normalize_input != no, max of inputs determined by training (printed on stdout at runtime)")
 parser.add_argument("--out_min", type=float, default=1e-3, help="if --normalize_input != no, min of targets determined by training (printed on stdout at runtime)")
 parser.add_argument("--out_max", type=float, default=1e-3, help="if --normalize_input != no, min of targets determined by training (printed on stdout at runtime)")
-
-
+parser.add_argument("--no_test_dropout", action='store_true', default=False, help="if enabled, DO NOT use dropout during test")
+parser.add_argument("--test_popnorm", action='store_true', default=False, help="if enabled, use population normalization instead of batch normalization at test")
+parser.add_argument("--keep_prob", type=float, default=0.4, help= "only for case adv")
 parser.add_argument("--buffer_size", default=1, type=int)
 parser.add_argument("--batch_size", default=1, type=int)
 a = parser.parse_args()
@@ -87,6 +88,7 @@ def run_generate():
     config = init_config() 
     sess = tf.Session()
     saved_model = tf.train.import_meta_graph(a.meta_file)
+    sess.run(tf.global_variables_initializer())
     saved_model.restore(sess,a.checkpoint)
     
     graph = tf.get_default_graph()
@@ -104,8 +106,14 @@ def run_generate():
         feed_dict, config, id_noisy = fill_feed_dict(noisy_pl, config, a.noisy_file, shuffle=False)
         if not id_noisy:
             break
-        feed_dict[keep_prob] = 1.0
-        feed_dict[is_training] = False
+        if (a.no_test_dropout is True):
+            print ("Not using dropout noise") 
+            feed_dict[keep_prob] = 1.0
+            feed_dict[is_training] = False
+        else:
+            print ("Using dropout noise")
+            feed_dict[keep_prob] = a.keep_prob
+            feed_dict[is_training] = True
 
         value = sess.run(predictions, feed_dict=feed_dict)
         if a.normalize_target == "sigmoid":

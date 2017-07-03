@@ -410,7 +410,7 @@ def placeholder_inputs():
     is_training = tf.placeholder(tf.bool, name="is_training")
     return noisy_placeholder, clean_placeholder, keep_prob, is_training
 
-def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
+def do_eval(sess, eval_fetches, noisy_pl, clean_pl, is_training, keep_prob):
     config = init_config()
     tot_loss_epoch = 0
     tot_objective_loss_epoch = 0
@@ -425,21 +425,21 @@ def do_eval(sess, gen_fetches, noisy_pl, clean_pl, is_training, keep_prob):
         feed_dict[keep_prob] = 1.0 if a.no_test_dropout else a.keep_prob
         if feed_dict[noisy_pl].shape[0]<a.batch_size:
             if a.objective == "adv":
-                result = sess.run(gen_fetches, feed_dict=feed_dict)
+                result = sess.run(eval_fetches, feed_dict=feed_dict)
                 tot_objective_loss_epoch += feed_dict[noisy_pl].shape[0]*result["objective_loss"]
                 tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
             elif a.objective == "mse" or a.objective == "l1":
-                result = sess.run(gen_fetches, feed_dict=feed_dict)
+                result = sess.run(eval_fetches, feed_dict=feed_dict)
             tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
             totframes += feed_dict[noisy_pl].shape[0]
             break
     
         if a.objective == "adv":
-            result = sess.run(gen_fetches, feed_dict=feed_dict)
+            result = sess.run(eval_fetches, feed_dict=feed_dict)
             tot_objective_loss_epoch += feed_dict[noisy_pl].shape[0]*result["objective_loss"]
             tot_gan_loss_epoch += feed_dict[noisy_pl].shape[0]*result["GAN_loss"]
         elif a.objective == "mse" or a.objective == "l1":
-            result = sess.run(gen_fetches, feed_dict=feed_dict)
+            result = sess.run(eval_fetches, feed_dict=feed_dict)
         tot_loss_epoch += feed_dict[noisy_pl].shape[0]*result["loss"]
         totframes += feed_dict[noisy_pl].shape[0]
 
@@ -472,16 +472,17 @@ def run_training():
         noisy_pl, clean_pl, keep_prob, is_training = placeholder_inputs()
         disc_fetches = {}
         gen_fetches = {}
+        eval_fetches = {}
         if a.objective == "mse" or a.objective == "l1":
             with tf.variable_scope('generator'):
                 predictions = create_generator(noisy_pl, keep_prob, is_training)
             if a.objective == "mse" :
                 gen_fetches['loss'] = mse_loss(predictions, clean_pl)
+                eval_fetches['loss'] = mse_loss(predictions, clean_pl)
             elif a.objective == "l1":
                 gen_fetches['loss'] = l1_loss(predictions, clean_pl)
+                eval_fetches['loss'] = l1_loss(predictions, clean_pl)
             gen_fetches['train'] = training(gen_fetches['loss'])
-            # loss_val = fetches['loss']
-            # train_op = training(loss_val)
         elif a.objective == "adv":
             model = create_adversarial_model(noisy_pl, clean_pl, keep_prob, is_training)
             disc_fetches['objective_loss'] = model.gen_loss_objective
@@ -497,17 +498,18 @@ def run_training():
             gen_fetches['loss'] = model.gen_loss
             gen_fetches['generator_train'] = model.gd_train
             gen_fetches['misc'] = model.misc
+            
+            eval_fetches['objective_loss'] = model.gen_loss_objective
+            eval_fetches['GAN_loss'] = model.gen_loss_GAN
+            eval_fetches['loss'] = model.gen_loss
+
 
             #fetches['predict_real'] = model.predict_real
             #fetches['predict_fake'] = model.predict_fake
-            # loss_val = fetches['loss']
-            # tf.summary.scalar('loss', loss_val)
-        #summary = tf.summary.merge_all()
         init = tf.global_variables_initializer()
         all_vars = tf.global_variables()
         saver = tf.train.Saver([var for var in all_vars if 'generator' in var.name])
         sess = tf.Session()
-        #summary_writer = tf.summary.FileWriter("log", sess.graph)
 
         sess.run(init)
         start_time = time.time()
@@ -558,20 +560,18 @@ def run_training():
                 tot_objective_loss_epoch = 0
                 tot_gan_loss_epoch = 0
                 tot_discrim_loss_epoch = 0
+                totframes = 0
                 duration = time.time() - start_time
                 start_time = time.time()
                 print ('Step %d: loss = %.6f (%.3f sec)' % (step, avg_loss_epoch, duration))
                 if a.objective == "adv":
-                    print ('Objective: %.2f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
+                    print ('Objective: %.6f  GAN: %.6f  Discrim: %.6f Loss:%.6f'
                            % (avg_objective_loss_epoch, avg_gan_loss_epoch, avg_discrim_loss_epoch, avg_loss_epoch))
 
                     #print ('predict_real: ', result['predict_real'])
                     #print ('predict_fake: ', result['predict_fake'])
-                #summary_str = sess.run(summary, feed_dict=feed_dict)
-                #summary_writer.add_summary(summary_str, step)
-                #summary_writer.flush()
                 print ('Eval step:')
-                eval_loss, duration = do_eval(sess, gen_fetches, noisy_pl,
+                eval_loss, duration = do_eval(sess, eval_fetches, noisy_pl,
                                               clean_pl, is_training, keep_prob)
                 
                 if eval_loss<best_validation_loss:

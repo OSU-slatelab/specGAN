@@ -6,6 +6,7 @@ import tensorflow as tf
 import numpy as np
 import argparse
 import os
+import sys
 from os import path
 import json
 import glob
@@ -96,9 +97,12 @@ def run_generate():
     keep_prob = graph.get_tensor_by_name("keep_prob:0")
     is_training = graph.get_tensor_by_name("is_training:0")
     
-    #[n.name for n in tf.get_default_graph().as_graph_def().node]
-
-    predictions = graph.get_tensor_by_name("generator/linear/cond/Merge:0")
+    #A = [n.name for n in graph.as_graph_def().node]
+    #print (A)
+    if a.normalize_target == "tanh": 
+        predictions = graph.get_tensor_by_name("generator/linear/Tanh:0")
+    else:
+        predictions = graph.get_tensor_by_name("generator/linear/cond/Merge:0")
 
     start_time = time.time()
     step = 0
@@ -117,9 +121,9 @@ def run_generate():
 
         value = sess.run(predictions, feed_dict=feed_dict)
         if a.normalize_target == "sigmoid":
-            value = np.interp(frame_buffer_clean, [0.0, 1.0], [a.out_min, a.out_max])
+            value = np.interp(value, [0.0, 1.0], [a.out_min, a.out_max])
         elif a.normalize_target == "tanh":
-            value = np.interp(frame_buffer_clean, [-1.0, 1.0], [a.out_min, a.out_max])
+            value = np.interp(value, [-1.0, 1.0], [a.out_min, a.out_max])
         
         kaldi_write_mats(a.out_file, bytes(id_noisy,'utf-8'), value)
     sess.close() 

@@ -514,9 +514,11 @@ def run_training():
         step = 0
         if a.normalize_input != "no":
             print("finding range of input values...")
+            global in_min, in_max
             in_min, in_max = find_min_max(a.noisy_train_file)
         if a.normalize_target != "no":
-            print("finding range of target values...")            
+            print("finding range of target values...")
+            global tgt_min, tgt_max
             tgt_min, tgt_max = find_min_max(a.clean_train_file)
         
         while(True):
